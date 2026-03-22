@@ -1,0 +1,12 @@
+invest_app/.env
+invest_app/venv/
+invest_app/__pycache__/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.log
+*.db
+*.sqlite3
+.DS_Store
+.vscode/
+.idea/
