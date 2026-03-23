@@ -6,12 +6,12 @@ Output: volatility_ok, market_phase, setup_allowed, atr_value
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class VolatilityAgent(BaseAgent):
@@ -25,15 +25,24 @@ class VolatilityAgent(BaseAgent):
         atr_period: int = 14,
         min_atr_pct: float = 0.0003,  # Mindest-ATR als % des Preises
         max_atr_pct: float = 0.015,   # Maximale ATR (zu hohe Volatilität)
+        config: Any = None,
+        data_connector: Any = None,
     ) -> None:
         super().__init__("volatility_agent")
-        self.atr_period = atr_period
+        self.atr_period = atr_period if config is None else getattr(config, "atr_period", atr_period)
         self.min_atr_pct = min_atr_pct
         self.max_atr_pct = max_atr_pct
+        self._config = config
+        self._data_connector = data_connector
 
-    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
+    def analyze(self, data: Any = None, symbol: Optional[str] = None, **kwargs: Any) -> dict:
         """
-        Input data:
+        Analyse kann entweder über dict oder direkt mit symbol aufgerufen werden.
+
+        Direktaufruf: agent.analyze(symbol="AAPL")
+        Dict-Aufruf:  agent.analyze({"symbol": "AAPL", "ohlcv": df})
+
+        Input data dict:
             symbol (str): Symbol
             ohlcv (pd.DataFrame): OHLCV-Daten
 
@@ -41,14 +50,27 @@ class VolatilityAgent(BaseAgent):
             volatility_ok, market_phase, setup_allowed, atr_value, atr_pct,
             session, is_compression, is_expansion
         """
-        symbol = self._require_field(data, "symbol")
+        # Direktaufruf mit symbol= Keyword-Argument
+        if symbol is not None and (data is None or not isinstance(data, dict)):
+            if self._data_connector is None:
+                return self._default_result(symbol, "Kein data_connector konfiguriert")
+            timeframe = self._config.htf_timeframe if self._config else "15m"
+            bars = self._config.htf_bars if self._config else 200
+            ohlcv = self._data_connector.get_ohlcv(symbol, timeframe, bars)
+            data = {"symbol": symbol, "ohlcv": ohlcv}
+        elif data is None:
+            data = {}
+
+        sym = self._require_field(data, "symbol")
         df: pd.DataFrame = self._require_field(data, "ohlcv")
 
         if df.empty or len(df) < self.atr_period + 1:
-            return self._default_result(symbol, "Unzureichende Daten")
+            return self._default_result(sym, "Unzureichende Daten")
 
         # ATR berechnen
         atr = self._calculate_atr(df)
+        if pd.isna(atr) or atr == 0:
+            return self._default_result(sym, "Zu wenig Daten für ATR-Berechnung")
         close = float(df["close"].iloc[-1])
         atr_pct = atr / close if close > 0 else 0.0
 
@@ -78,12 +100,12 @@ class VolatilityAgent(BaseAgent):
         setup_allowed = volatility_ok and market_phase != "compression"
 
         self.logger.debug(
-            f"{symbol} | ATR: {atr:.5f} ({atr_pct:.3%}) | "
+            f"{sym} | ATR: {atr:.5f} ({atr_pct:.3%}) | "
             f"Phase: {market_phase} | Session: {session} | OK: {volatility_ok}"
         )
 
         return {
-            "symbol": symbol,
+            "symbol": sym,
             "volatility_ok": volatility_ok,
             "market_phase": market_phase,
             "setup_allowed": setup_allowed,
@@ -142,7 +164,10 @@ class VolatilityAgent(BaseAgent):
             (low - close.shift(1)).abs(),
         ], axis=1).max(axis=1)
 
-        avg_atr = float(tr.ewm(span=self.atr_period, adjust=False).mean().mean())
+        avg_atr_raw = tr.ewm(span=self.atr_period, adjust=False).mean().mean()
+        if pd.isna(avg_atr_raw):
+            return False
+        avg_atr = float(avg_atr_raw)
         return current_atr > avg_atr * 1.5 if avg_atr > 0 else False
 
     @staticmethod

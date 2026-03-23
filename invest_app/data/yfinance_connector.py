@@ -5,7 +5,7 @@ Wird verwendet wenn MT5 nicht verfügbar ist (Linux, Mac, Demo ohne Terminal).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import pandas as pd
@@ -134,7 +134,7 @@ class YFinanceConnector:
                 "bid": price,
                 "ask": price,
                 "spread": 0.0,
-                "time": datetime.utcnow(),
+                "time": datetime.now(timezone.utc),
             }
         except Exception as e:
             logger.error(f"get_current_price Fehler für {yf_symbol}: {e}")

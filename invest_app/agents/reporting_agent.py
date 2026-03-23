@@ -5,11 +5,11 @@ Output: Signalliste + Report-Datei in Output/
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 from models.signal import Signal, SignalStatus
 
 
@@ -34,7 +34,7 @@ class ReportingAgent(BaseAgent):
             top_signals, report_path, signal_count
         """
         signals: list[Signal] = self._require_field(data, "signals")
-        cycle_id = data.get("cycle_id", datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+        cycle_id = data.get("cycle_id", datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
 
         # Signale ranken und filtern
         approved = [s for s in signals if s.status == SignalStatus.APPROVED]
@@ -59,7 +59,7 @@ class ReportingAgent(BaseAgent):
 
     def _generate_markdown_report(self, signals: list[Signal], cycle_id: str) -> str:
         """Erstellt den Markdown-Report."""
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         lines = [
             f"# InvestApp Signal-Report",
             f"**Zyklus:** {cycle_id}  ",

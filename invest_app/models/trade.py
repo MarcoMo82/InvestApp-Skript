@@ -6,7 +6,7 @@ Wird nach erfolgreicher Orderplatzierung via MT5 erstellt.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -39,7 +39,7 @@ class Trade(BaseModel):
     lot_size: float = Field(..., gt=0)
 
     # Zeitstempel
-    open_time: datetime = Field(default_factory=datetime.utcnow)
+    open_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     close_time: Optional[datetime] = Field(default=None)
     close_price: Optional[float] = Field(default=None, ge=0)
 
@@ -54,7 +54,7 @@ class Trade(BaseModel):
     def close(self, close_price: float, pnl: float, pnl_pips: float = 0.0) -> None:
         """Schließt den Trade und setzt alle Schluss-Felder."""
         self.close_price = close_price
-        self.close_time = datetime.utcnow()
+        self.close_time = datetime.now(timezone.utc)
         self.pnl = round(pnl, 2)
         self.pnl_pips = round(pnl_pips, 1)
         self.status = TradeStatus.CLOSED

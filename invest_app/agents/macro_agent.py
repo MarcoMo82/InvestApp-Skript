@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 from utils.claude_client import ClaudeClient
 from data.news_fetcher import NewsFetcher
 

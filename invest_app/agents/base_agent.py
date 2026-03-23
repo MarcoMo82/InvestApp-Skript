@@ -26,7 +26,7 @@ class BaseAgent(ABC):
         self._total_duration_ms: float = 0.0
 
     @abstractmethod
-    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
+    def analyze(self, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """
         Führt die Analyse durch und gibt ein strukturiertes Ergebnis zurück.
 

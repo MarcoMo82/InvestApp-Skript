@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class LevelAgent(BaseAgent):

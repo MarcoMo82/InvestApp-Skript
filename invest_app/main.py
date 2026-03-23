@@ -59,6 +59,9 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
     from agents.risk_agent import RiskAgent
     from agents.validation_agent import ValidationAgent
     from agents.reporting_agent import ReportingAgent
+    from agents.learning_agent import LearningAgent
+
+    learning_agent = LearningAgent(output_dir=config.output_dir, db=db, config=config)
 
     return Orchestrator(
         config=config,
@@ -76,6 +79,7 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         validation_agent=ValidationAgent(claude_client=claude),
         reporting_agent=ReportingAgent(output_dir=config.output_dir),
         database=db,
+        learning_agent=learning_agent,
     )
 
 

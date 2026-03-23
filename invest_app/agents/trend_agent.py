@@ -5,12 +5,12 @@ Output: direction, strength_score, structure_status, long_allowed, short_allowed
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class TrendAgent(BaseAgent):
@@ -19,13 +19,25 @@ class TrendAgent(BaseAgent):
     Berechnet EMAs, Marktstruktur und gibt Trendrichtung aus.
     """
 
-    def __init__(self, ema_periods: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        ema_periods: Optional[list] = None,
+        config: Any = None,
+        data_connector: Any = None,
+    ) -> None:
         super().__init__("trend_agent")
-        self.ema_periods = ema_periods or [9, 21, 50, 200]
+        self.ema_periods = ema_periods or (config.ema_periods if config else [9, 21, 50, 200])
+        self._config = config
+        self._data_connector = data_connector
 
-    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
+    def analyze(self, data: Any = None, symbol: Optional[str] = None, **kwargs: Any) -> dict:
         """
-        Input data:
+        Analyse kann entweder über dict oder direkt mit symbol aufgerufen werden.
+
+        Direktaufruf: agent.analyze(symbol="AAPL")
+        Dict-Aufruf:  agent.analyze({"symbol": "AAPL", "ohlcv": df})
+
+        Input data dict:
             symbol (str): Symbol
             ohlcv (pd.DataFrame): OHLCV-Daten mit mindestens 200 Bars
 
@@ -33,12 +45,23 @@ class TrendAgent(BaseAgent):
             direction, strength_score, structure_status,
             long_allowed, short_allowed, ema_values
         """
-        symbol = self._require_field(data, "symbol")
+        # Direktaufruf mit symbol= Keyword-Argument
+        if symbol is not None and (data is None or not isinstance(data, dict)):
+            if self._data_connector is None:
+                return self._neutral_result(symbol, "Kein data_connector konfiguriert")
+            timeframe = self._config.htf_timeframe if self._config else "15m"
+            bars = self._config.htf_bars if self._config else 200
+            ohlcv = self._data_connector.get_ohlcv(symbol, timeframe, bars)
+            data = {"symbol": symbol, "ohlcv": ohlcv}
+        elif data is None:
+            data = {}
+
+        sym = self._require_field(data, "symbol")
         df: pd.DataFrame = self._require_field(data, "ohlcv")
 
         if df.empty or len(df) < max(self.ema_periods):
-            self.logger.warning(f"Unzureichende Daten für {symbol}: {len(df)} Bars")
-            return self._neutral_result(symbol, "Unzureichende Datenlage")
+            self.logger.warning(f"Unzureichende Daten für {sym}: {len(df)} Bars")
+            return self._neutral_result(sym, "Unzureichende Datenlage")
 
         # EMAs berechnen
         ema_values = {}
@@ -88,13 +111,38 @@ class TrendAgent(BaseAgent):
         # BoS / CHoCH erkennen
         bos_choch = self._detect_bos_choch(df, direction)
 
+        # ATR berechnen für Seitwärtsmarkt-Erkennung (NaN-sicher)
+        high = df["high"]
+        low = df["low"]
+        tr_series = pd.concat([
+            high - low,
+            (high - df["close"].shift(1)).abs(),
+            (low - df["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+
+        atr_current = float(tr_series.iloc[-1])
+        if len(df) < 20:
+            atr_avg = float(tr_series.mean())
+        else:
+            atr_avg_raw = tr_series.rolling(20).mean().iloc[-1]
+            if pd.isna(atr_avg_raw) or atr_avg_raw == 0:
+                atr_avg = float(tr_series.mean())
+            else:
+                atr_avg = float(atr_avg_raw)
+
+        # Seitwärtsmarkt prüfen – überschreibt direction wenn erkannt
+        if self._detect_sideways(df, atr_current, atr_avg):
+            direction = "sideways"
+            structure_status = "sideways market"
+            strength_score = 3
+
         return {
-            "symbol": symbol,
+            "symbol": sym,
             "direction": direction,
             "strength_score": strength_score,
             "structure_status": structure_status,
-            "long_allowed": direction in ("long",),
-            "short_allowed": direction in ("short",),
+            "long_allowed": direction == "long",
+            "short_allowed": direction == "short",
             "ema_values": ema_values,
             "close": close,
             "bos_detected": bos_choch["bos"],
@@ -180,6 +228,34 @@ class TrendAgent(BaseAgent):
             score -= 1
 
         return max(1, min(10, score))
+
+    @staticmethod
+    def _detect_sideways(ohlcv: pd.DataFrame, atr: float, atr_avg: float) -> bool:
+        """
+        Seitwärtsmarkt wenn:
+        1. ATR < 70% des 20P-Durchschnitts (geringe Volatilität)
+        2. Letzten 10 Kerzen: kein klares HH/HL oder LH/LL Pattern
+        """
+        # Bedingung 1: ATR-Verhältnis
+        if atr_avg > 0 and (atr / atr_avg) < 0.7:
+            return True
+
+        # Bedingung 2: Keine klare Struktur in letzten 10 Kerzen
+        recent = ohlcv.tail(10)
+        highs = recent["high"].values
+        lows = recent["low"].values
+
+        hh_count = sum(1 for i in range(1, len(highs)) if highs[i] > highs[i - 1])
+        ll_count = sum(1 for i in range(1, len(lows)) if lows[i] < lows[i - 1])
+        hl_count = sum(1 for i in range(1, len(lows)) if lows[i] > lows[i - 1])
+        lh_count = sum(1 for i in range(1, len(highs)) if highs[i] < highs[i - 1])
+
+        # Kein dominantes Muster: weder Uptrend noch Downtrend klar erkennbar
+        trend_score = abs((hh_count + hl_count) - (ll_count + lh_count))
+        if trend_score <= 2:
+            return True  # Zu ausgeglichen = Seitwärts
+
+        return False
 
     @staticmethod
     def _neutral_result(symbol: str, reason: str) -> dict:

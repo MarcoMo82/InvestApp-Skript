@@ -6,23 +6,27 @@ Führt alle Agenten sequenziell aus und aggregiert die Ergebnisse zu einem Signa
 from __future__ import annotations
 
 import threading
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from .macro_agent import MacroAgent
-from .trend_agent import TrendAgent
-from .volatility_agent import VolatilityAgent
-from .level_agent import LevelAgent
-from .entry_agent import EntryAgent
-from .risk_agent import RiskAgent
-from .validation_agent import ValidationAgent
-from .reporting_agent import ReportingAgent
+from agents.macro_agent import MacroAgent
+from agents.trend_agent import TrendAgent
+from agents.volatility_agent import VolatilityAgent
+from agents.level_agent import LevelAgent
+from agents.entry_agent import EntryAgent
+from agents.risk_agent import RiskAgent
+from agents.validation_agent import ValidationAgent
+from agents.reporting_agent import ReportingAgent
+from agents.learning_agent import LearningAgent
 from models.signal import Signal, SignalStatus, Direction
 from utils.logger import get_logger
 from utils.database import Database
+
+if TYPE_CHECKING:
+    from agents.watch_agent import WatchAgent
 
 logger = get_logger(__name__)
 
@@ -51,6 +55,8 @@ class Orchestrator:
         validation_agent: ValidationAgent,
         reporting_agent: ReportingAgent,
         database: Database,
+        learning_agent: Optional[LearningAgent] = None,
+        watch_agent: Optional["WatchAgent"] = None,
     ) -> None:
         self.config = config
         self.connector = connector
@@ -62,6 +68,8 @@ class Orchestrator:
         self.risk_agent = risk_agent
         self.validation_agent = validation_agent
         self.reporting_agent = reporting_agent
+        self.learning_agent = learning_agent
+        self.watch_agent = watch_agent
         self.db = database
 
         self._scheduler: Optional[BackgroundScheduler] = None
@@ -86,7 +94,7 @@ class Orchestrator:
             return []
 
         self._cycle_count += 1
-        cycle_id = f"cycle_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{self._cycle_count}"
+        cycle_id = f"cycle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{self._cycle_count}"
         logger.info(f"=== Zyklus {self._cycle_count} gestartet ({cycle_id}) ===")
 
         all_signals: list[Signal] = []
@@ -105,7 +113,29 @@ class Orchestrator:
         if all_signals:
             self.reporting_agent.run({"signals": all_signals, "cycle_id": cycle_id})
 
+        # Learning (nicht-blockierend, nach Reporting)
+        if self.learning_agent is not None:
+            try:
+                self.learning_agent.run_post_cycle([])
+            except Exception as e:
+                logger.warning(f"LearningAgent Fehler: {e}")
+
         approved = [s for s in all_signals if s.status == SignalStatus.APPROVED]
+
+        # Signale weiterleiten: Watch-Agent übernimmt Ausführung (kein doppelter place_order)
+        for signal in approved:
+            instrument = signal.instrument
+            signal_dict = signal.model_dump(mode="json")
+            if self.watch_agent is not None:
+                self.watch_agent.add_pending_signal(signal_dict)
+                logger.info(f"Signal an Watch-Agent übergeben: {instrument}")
+            else:
+                # Fallback: direkter Market-Entry
+                self._place_and_save_order(signal)
+
+        # Positions-Status überwachen (nur Logging + Daily-Loss, kein Partial-Exit)
+        self._monitor_open_positions()
+
         logger.info(
             f"=== Zyklus {self._cycle_count} abgeschlossen | "
             f"Signale: {len(all_signals)} | Freigegeben: {len(approved)} ==="
@@ -140,8 +170,8 @@ class Orchestrator:
         # 2. Trend-Analyse
         trend_result = self.trend_agent.run({"symbol": symbol, "ohlcv": ohlcv_htf})
         direction = trend_result.get("direction", "neutral")
-        if direction == "neutral":
-            logger.debug(f"{symbol}: Kein klarer Trend")
+        if direction in ("neutral", "sideways"):
+            logger.debug(f"{symbol}: Kein klarer Trend ({direction})")
             return None
 
         # 3. Volatilitäts-Analyse
@@ -277,6 +307,36 @@ class Orchestrator:
         """Deaktiviert den Kill-Switch."""
         self._kill_switch.clear()
         logger.info("Kill-Switch deaktiviert.")
+
+    def _monitor_open_positions(self) -> None:
+        """
+        Überwacht offene Positionen.
+        Nur Status-Logging und tägliches Loss-Limit – kein Partial-Exit oder Trailing-Stop.
+        Positions-Verwaltung gehört vollständig zum Watch-Agent.
+        """
+        if self._check_daily_loss_limit():
+            logger.warning("_monitor_open_positions: Daily-Loss-Limit erreicht.")
+            return
+        try:
+            open_trades = self.db.get_open_trades() if hasattr(self.db, "get_open_trades") else []
+            if open_trades:
+                logger.info(f"Offene Positionen: {len(open_trades)}")
+        except Exception as e:
+            logger.debug(f"Positions-Status nicht verfügbar: {e}")
+
+    def _place_and_save_order(self, signal: Signal) -> None:
+        """
+        Fallback: Platziert eine Order direkt wenn kein Watch-Agent vorhanden.
+        Wird nur genutzt wenn self.watch_agent is None.
+        """
+        try:
+            signal_dict = signal.model_dump(mode="json")
+            if hasattr(self.connector, "place_order"):
+                self.connector.place_order(signal_dict)
+            self.db.save_trade(signal_dict)
+            logger.info(f"Fallback-Order platziert: {signal.instrument}")
+        except Exception as e:
+            logger.error(f"Fallback-Order fehlgeschlagen für {signal.instrument}: {e}")
 
     def _check_daily_loss_limit(self) -> bool:
         """Prüft ob das tägliche Verlustlimit erreicht wurde."""

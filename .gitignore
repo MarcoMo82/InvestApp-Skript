@@ -10,3 +10,9 @@ invest_app/__pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
+
+# Test Coverage
+.coverage

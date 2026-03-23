@@ -33,3 +33,9 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Claude Code
+.claude/
+
+# Test Coverage
+.coverage

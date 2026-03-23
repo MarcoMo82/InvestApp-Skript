@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 from utils.claude_client import ClaudeClient
 
 SYSTEM_PROMPT = """Du bist ein erfahrener Trading-Analyst der Trading-Signale kritisch bewertet.
@@ -148,7 +148,9 @@ class ValidationAgent(BaseAgent):
             result = self._rule_based_score(macro, trend, vol, level, entry, risk)
 
         result["symbol"] = symbol
-        result["validated"] = result.get("confidence_score", 0) >= 80.0
+        confidence_score = min(max(result.get("confidence_score", 0.0), 0.0), 100.0)
+        result["confidence_score"] = confidence_score
+        result["validated"] = confidence_score >= 80.0
         return result
 
     def _check_hard_rules(
@@ -175,8 +177,9 @@ class ValidationAgent(BaseAgent):
                 response = response.split("```")[1].split("```")[0].strip()
 
             parsed = json.loads(response)
+            confidence_score = min(max(float(parsed.get("confidence_score", 50)), 0.0), 100.0)
             return {
-                "confidence_score": float(parsed.get("confidence_score", 50)),
+                "confidence_score": confidence_score,
                 "pros": parsed.get("pros", []),
                 "cons": parsed.get("cons", []),
                 "validated": False,  # Wird danach gesetzt

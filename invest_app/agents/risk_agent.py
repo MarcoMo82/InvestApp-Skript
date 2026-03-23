@@ -5,9 +5,9 @@ Output: stop_loss, take_profit, crv, lot_size, trade_allowed
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class RiskAgent(BaseAgent):
@@ -23,15 +23,60 @@ class RiskAgent(BaseAgent):
         risk_per_trade: float = 0.01,
         min_lot: float = 0.01,
         max_lot: float = 10.0,
+        config: Any = None,
     ) -> None:
         super().__init__("risk_agent")
-        self.sl_atr_multiplier = sl_atr_multiplier
-        self.min_crv = min_crv
-        self.risk_per_trade = risk_per_trade
+        # config-Parameter haben Vorrang wenn übergeben
+        if config is not None:
+            self.sl_atr_multiplier = getattr(config, "atr_sl_multiplier", sl_atr_multiplier)
+            self.min_crv = getattr(config, "min_crv", min_crv)
+            self.risk_per_trade = getattr(config, "risk_per_trade", risk_per_trade)
+        else:
+            self.sl_atr_multiplier = sl_atr_multiplier
+            self.min_crv = min_crv
+            self.risk_per_trade = risk_per_trade
         self.min_lot = min_lot
         self.max_lot = max_lot
+        self._config = config
 
-    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
+    def calculate(
+        self,
+        entry_price: float,
+        direction: str,
+        atr: float,
+        account_balance: float = 10000.0,
+        symbol: str = "UNKNOWN",
+        pip_value: float = 10.0,
+        pip_size: Optional[float] = None,
+    ) -> dict:
+        """
+        Direktaufruf für Risikoberechnung ohne dict-Wrapping.
+
+        Args:
+            entry_price: Einstiegspreis
+            direction: 'long' oder 'short'
+            atr: ATR-Wert
+            account_balance: Kontostand
+            symbol: Symbol (für Pip-Size-Ableitung)
+            pip_value: Pip-Wert pro Lot
+            pip_size: Pip-Größe (None = automatisch ableiten)
+
+        Returns:
+            dict mit stop_loss, take_profit, crv, lot_size, trade_allowed
+        """
+        data = {
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": entry_price,
+            "atr_value": atr,
+            "account_balance": account_balance,
+            "pip_value": pip_value,
+        }
+        if pip_size is not None:
+            data["pip_size"] = pip_size
+        return self.analyze(data)
+
+    def analyze(self, data: Any = None, **kwargs: Any) -> dict:
         """
         Input data:
             symbol (str): Symbol
@@ -45,6 +90,9 @@ class RiskAgent(BaseAgent):
         Output:
             stop_loss, take_profit, crv, lot_size, sl_pips, trade_allowed, rejection_reason
         """
+        if data is None:
+            data = {}
+
         symbol = self._require_field(data, "symbol")
         direction = self._require_field(data, "direction")
         entry_price = self._require_field(data, "entry_price")
@@ -58,6 +106,15 @@ class RiskAgent(BaseAgent):
 
         # SL berechnen (ATR-basiert)
         sl_distance = atr * self.sl_atr_multiplier
+
+        # Instrument-abhängige SL-Grenze prüfen
+        max_sl = self._get_max_sl_distance(entry_price, atr)
+        if sl_distance > max_sl:
+            return self._rejected(
+                symbol,
+                f"SL-Distanz {sl_distance:.5f} überschreitet Maximum {max_sl:.5f} "
+                f"({'Forex' if entry_price < 100 else 'Aktie/Index'})"
+            )
 
         if direction == "long":
             stop_loss = entry_price - sl_distance
@@ -124,6 +181,20 @@ class RiskAgent(BaseAgent):
 
         # Auf 2 Dezimalstellen runden (Standard-Lot-Schrittweite)
         return round(lot, 2)
+
+    @staticmethod
+    def _get_max_sl_distance(entry_price: float, atr: float) -> float:
+        """
+        Instrument-Typ aus Preisgröße ableiten:
+        - Forex (Preis < 100): max 80 Pips = 80 × 0.0001 = 0.008
+        - Aktien/Indices (Preis >= 100): max 3% des Entry-Preises
+        """
+        if entry_price < 100:  # Forex
+            pip_size = 0.0001
+            max_pips = 80
+            return max_pips * pip_size
+        else:  # Aktien, Indices
+            return entry_price * 0.03
 
     @staticmethod
     def _infer_pip_size(symbol: str, price: float) -> float:

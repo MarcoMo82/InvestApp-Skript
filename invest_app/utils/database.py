@@ -5,7 +5,7 @@ SQLite-Datenbankanbindung via SQLAlchemy für Signale, Trades und Performance.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from .logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,7 +27,7 @@ class SignalRecord(Base):
     __tablename__ = "signals"
 
     id = Column(String, primary_key=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     instrument = Column(String(20), nullable=False, index=True)
     direction = Column(String(10))
     trend_status = Column(Text)
@@ -57,7 +57,7 @@ class TradeRecord(Base):
     sl = Column(Float)
     tp = Column(Float)
     lot_size = Column(Float)
-    open_time = Column(DateTime, default=datetime.utcnow)
+    open_time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     close_time = Column(DateTime)
     close_price = Column(Float)
     pnl = Column(Float)
@@ -70,7 +70,7 @@ class AgentLogRecord(Base):
     __tablename__ = "agent_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     agent_name = Column(String(50), nullable=False)
     instrument = Column(String(20))
     input_data = Column(JSON)
@@ -83,7 +83,7 @@ class PerformanceRecord(Base):
     __tablename__ = "performance"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(DateTime, default=datetime.utcnow, index=True)
+    date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     total_trades = Column(Integer, default=0)
     winning_trades = Column(Integer, default=0)
     losing_trades = Column(Integer, default=0)
@@ -113,7 +113,7 @@ class Database:
         data = signal.model_dump() if hasattr(signal, "model_dump") else signal
         record = SignalRecord(
             id=data["id"],
-            timestamp=data.get("timestamp", datetime.utcnow()),
+            timestamp=data.get("timestamp", datetime.now(timezone.utc)),
             instrument=data["instrument"],
             direction=str(data["direction"]),
             trend_status=data.get("trend_status", ""),
@@ -137,7 +137,7 @@ class Database:
 
     def get_recent_signals(self, hours: int = 24, min_confidence: float = 0.0) -> list[dict]:
         """Gibt Signale der letzten N Stunden zurück, optional gefiltert nach Confidence."""
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         with self._session() as session:
             records = (
                 session.query(SignalRecord)
@@ -163,7 +163,7 @@ class Database:
             sl=data.get("sl", 0.0),
             tp=data.get("tp", 0.0),
             lot_size=data.get("lot_size", 0.0),
-            open_time=data.get("open_time", datetime.utcnow()),
+            open_time=data.get("open_time", datetime.now(timezone.utc)),
             close_time=data.get("close_time"),
             close_price=data.get("close_price"),
             pnl=data.get("pnl"),
@@ -185,9 +185,22 @@ class Database:
             )
         return [self._trade_to_dict(r) for r in records]
 
+    def get_closed_trades(self, days: int = 30) -> list[dict]:
+        """Gibt geschlossene Trades der letzten N Tage zurück."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with self._session() as session:
+            records = (
+                session.query(TradeRecord)
+                .filter(TradeRecord.status == "closed")
+                .filter(TradeRecord.close_time >= cutoff)
+                .order_by(TradeRecord.close_time.desc())
+                .all()
+            )
+        return [self._trade_to_dict(r) for r in records]
+
     def get_daily_pnl(self) -> float:
         """Gibt den heutigen kumulierten PnL zurück."""
-        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         with self._session() as session:
             result = session.execute(
                 text(
@@ -225,7 +238,7 @@ class Database:
 
     def get_performance_stats(self, days: int = 30) -> dict:
         """Berechnet Performance-Kennzahlen der letzten N Tage."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         with self._session() as session:
             trades = (
                 session.query(TradeRecord)

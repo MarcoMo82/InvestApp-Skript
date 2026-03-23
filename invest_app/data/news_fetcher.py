@@ -6,7 +6,7 @@ Beinhaltet Caching mit 5-Minuten TTL.
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -76,11 +76,11 @@ class NewsFetcher:
                     try:
                         pub_date = datetime.fromisoformat(pub_date_raw.replace("Z", "+00:00"))
                     except ValueError:
-                        pub_date = datetime.utcnow()
+                        pub_date = datetime.now(timezone.utc)
                 elif isinstance(pub_date_raw, (int, float)) and pub_date_raw > 0:
-                    pub_date = datetime.utcfromtimestamp(pub_date_raw)
+                    pub_date = datetime.fromtimestamp(pub_date_raw, tz=timezone.utc)
                 else:
-                    pub_date = datetime.utcnow()
+                    pub_date = datetime.now(timezone.utc)
 
                 summary = content.get("summary", item.get("summary", ""))
 

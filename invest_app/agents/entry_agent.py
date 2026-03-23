@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class EntryAgent(BaseAgent):

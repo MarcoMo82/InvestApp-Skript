@@ -7,9 +7,10 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Optional
 
 
-def get_logger(name: str, log_dir: Path | None = None, level: str = "INFO") -> logging.Logger:
+def get_logger(name: str, log_dir: Optional[Path] = None, level: str = "INFO") -> logging.Logger:
     """
     Gibt einen konfigurierten Logger zurück.
 
