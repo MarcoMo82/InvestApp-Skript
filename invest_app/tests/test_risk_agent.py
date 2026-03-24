@@ -338,3 +338,110 @@ class TestCalculateMethod:
             atr=0.0,
         )
         assert result["trade_allowed"] is False
+
+
+class TestMaxOpenPositions:
+    """P1.1: Max. offene Positionen blockiert Trade."""
+
+    def _make_config(self, max_open: int = 3):
+        cfg = type("Cfg", (), {
+            "max_open_positions": max_open,
+            "atr_sl_multiplier": 2.0,
+            "min_crv": 2.0,
+            "risk_per_trade": 0.01,
+        })()
+        return cfg
+
+    def test_max_open_positions_blocks_trade(self):
+        """open_positions=3, max=3 → trade_allowed=False."""
+        cfg = self._make_config(max_open=3)
+        agent = RiskAgent(config=cfg)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "atr_value": 0.0010,
+            "open_positions": 3,
+        })
+        assert result["trade_allowed"] is False
+        assert "Max. offene Positionen" in result["rejection_reason"]
+        assert "3/3" in result["rejection_reason"]
+
+    def test_below_max_open_positions_allowed(self):
+        """open_positions=2, max=3 → nicht aus diesem Grund blockiert."""
+        cfg = self._make_config(max_open=3)
+        agent = RiskAgent(config=cfg)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "atr_value": 0.0010,
+            "open_positions": 2,
+        })
+        # Darf nicht wegen Position-Limit abgelehnt werden
+        if not result["trade_allowed"]:
+            assert "Max. offene Positionen" not in result.get("rejection_reason", "")
+
+
+class TestSpreadFilter:
+    """P1.3: Spread-Filter im Entry-Agent."""
+
+    def _make_config(self):
+        cfg = type("Cfg", (), {
+            "normal_spread_pips": {
+                "EURUSD": 0.5, "GBPUSD": 1.0,
+            },
+            "spread_filter_multiplier": 3.0,
+        })()
+        return cfg
+
+    def _make_df(self, n: int = 20) -> pd.DataFrame:
+        closes = [1.1000 + i * 0.0001 for i in range(n)]
+        return pd.DataFrame({
+            "open": closes,
+            "high": [c + 0.0005 for c in closes],
+            "low": [c - 0.0005 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * n,
+        })
+
+    def test_spread_filter_blocks_entry(self):
+        """Spread 5.0 Pips für EURUSD (normal=0.5, 3x=1.5) → entry_type='none'."""
+        from agents.entry_agent import EntryAgent
+        cfg = self._make_config()
+        agent = EntryAgent(config=cfg)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": self._make_df(),
+            "direction": "long",
+            "current_spread_pips": 5.0,
+        })
+        assert result["entry_found"] is False
+        assert result["entry_type"] == "none"
+        assert "Spread zu hoch" in result["trigger_condition"]
+
+    def test_spread_filter_allows_normal(self):
+        """Spread 0.8 Pips für EURUSD (normal=0.5, 3x=1.5) → kein Spread-Block."""
+        from agents.entry_agent import EntryAgent
+        cfg = self._make_config()
+        agent = EntryAgent(config=cfg)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": self._make_df(),
+            "direction": "long",
+            "current_spread_pips": 0.8,
+        })
+        # Darf nicht wegen Spread blockiert werden
+        assert "Spread zu hoch" not in result.get("trigger_condition", "")
+
+    def test_spread_filter_no_config_no_block(self):
+        """Ohne Config → kein Spread-Block (graceful degradation)."""
+        from agents.entry_agent import EntryAgent
+        agent = EntryAgent()  # kein config
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": self._make_df(),
+            "direction": "long",
+            "current_spread_pips": 99.0,
+        })
+        assert "Spread zu hoch" not in result.get("trigger_condition", "")

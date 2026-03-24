@@ -204,6 +204,47 @@ class TestRunScanner:
 # Test 8: WatchAgent ruft simulation_agent.on_watch_cycle() auf
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test 9: Daily Drawdown Flag überspringt Zyklus
+# ---------------------------------------------------------------------------
+
+class TestDailyDrawdownFlag:
+    """Orchestrator überspringt Zyklus wenn _daily_loss_triggered=True."""
+
+    def test_daily_drawdown_flag_skips_cycle(self):
+        """Test 9: _daily_loss_triggered=True → run_cycle() gibt [] zurück."""
+        from agents.orchestrator import Orchestrator
+
+        cfg = MagicMock()
+        cfg.all_symbols = ["EURUSD"]
+        cfg.min_confidence_score = 80.0
+        cfg.max_daily_loss = 0.05
+        cfg.show_cycle_banner = False
+
+        orch = Orchestrator(
+            config=cfg,
+            connector=MagicMock(),
+            macro_agent=MagicMock(),
+            trend_agent=MagicMock(),
+            volatility_agent=MagicMock(),
+            level_agent=MagicMock(),
+            entry_agent=MagicMock(),
+            risk_agent=MagicMock(),
+            validation_agent=MagicMock(),
+            reporting_agent=MagicMock(),
+            database=MagicMock(),
+        )
+
+        # Flag direkt setzen (simuliert überschrittenes Limit)
+        orch._daily_loss_triggered = True
+
+        result = orch.run_cycle()
+
+        assert result == [], (
+            "run_cycle() muss [] zurückgeben wenn _daily_loss_triggered=True"
+        )
+
+
 class TestWatchAgentCallsSimulation:
     """WatchAgent.run_watch_cycle() muss simulation_agent.on_watch_cycle() aufrufen."""
 

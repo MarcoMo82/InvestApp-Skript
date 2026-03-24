@@ -3,6 +3,7 @@ Zentrale Konfiguration für das InvestApp Trading-System.
 Lädt alle Einstellungen aus der .env-Datei und stellt sie typisiert bereit.
 """
 
+import json
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -34,7 +35,22 @@ class Config:
         default_factory=lambda: float(os.getenv("RISK_PER_TRADE", "0.01"))
     )
     max_daily_loss: float = field(
-        default_factory=lambda: float(os.getenv("MAX_DAILY_LOSS", "0.03"))
+        default_factory=lambda: float(os.getenv("MAX_DAILY_LOSS", "0.05"))
+    )
+    max_open_positions: int = field(
+        default_factory=lambda: int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+    )
+
+    # --- Spread-Filter ---
+    normal_spread_pips: dict = field(default_factory=lambda: json.loads(
+        os.getenv("NORMAL_SPREAD_PIPS", json.dumps({
+            "EURUSD": 0.5, "GBPUSD": 1.0, "USDJPY": 0.5, "USDCHF": 1.0,
+            "AUDUSD": 0.8, "USDCAD": 1.0, "NZDUSD": 1.0, "GBPJPY": 1.5,
+            "EURJPY": 0.8, "EURGBP": 0.7, "XAUUSD": 3.0, "BTCUSD": 50.0,
+        }))
+    ))
+    spread_filter_multiplier: float = field(
+        default_factory=lambda: float(os.getenv("SPREAD_FILTER_MULTIPLIER", "3.0"))
     )
 
     # --- Signal-Qualität ---

@@ -540,6 +540,52 @@ class MT5Connector:
         except Exception:
             return {}
 
+    def get_open_positions_count(self) -> int:
+        """Gibt die Anzahl aktuell offener Positionen zurück."""
+        if not self._connected:
+            return 0
+        try:
+            count = mt5.positions_total()
+            return count if count is not None else 0
+        except Exception as e:
+            logger.warning(f"get_open_positions_count Fehler: {e}")
+            return 0
+
+    def get_current_spread_pips(self, symbol: str) -> float:
+        """Berechnet den aktuellen Spread in Pips aus Tick-Daten."""
+        if not self._connected:
+            return 0.0
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            info = mt5.symbol_info(symbol)
+            if tick is None or info is None:
+                return 0.0
+            spread_raw = tick.ask - tick.bid
+            # Pip-Size: 10^(-(digits-1)), z.B. digits=5 → pip=0.0001
+            pip_size = 10 ** (-(info.digits - 1)) if info.digits >= 1 else 1.0
+            return round(spread_raw / pip_size, 2) if pip_size > 0 else 0.0
+        except Exception as e:
+            logger.warning(f"get_current_spread_pips für {symbol} fehlgeschlagen: {e}")
+            return 0.0
+
+    def get_today_realized_pnl(self) -> float:
+        """Gibt den realisierten Tages-P&L aus MT5-History zurück."""
+        if not self._connected:
+            return 0.0
+        try:
+            from datetime import timedelta
+            date_from = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            date_to = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(date_from, date_to)
+            if deals is None:
+                return 0.0
+            return sum(d.profit for d in deals)
+        except Exception as e:
+            logger.warning(f"MT5-History P&L Fehler: {e}")
+            return 0.0
+
     def _require_connection(self) -> None:
         if not self._connected:
             raise ConnectionError("MT5 nicht verbunden. Zuerst connect() aufrufen.")

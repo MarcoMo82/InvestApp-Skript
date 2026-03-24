@@ -103,6 +103,16 @@ class RiskAgent(BaseAgent):
         entry_price = self._require_field(data, "entry_price")
         atr = self._require_field(data, "atr_value")
         balance = data.get("account_balance", 10000.0)
+
+        # P1.1: Max. offene Positionen prüfen
+        open_positions = data.get("open_positions", 0)
+        if self._config is not None:
+            max_pos = getattr(self._config, "max_open_positions", None)
+            if max_pos is not None and open_positions >= max_pos:
+                return self._rejected(
+                    symbol,
+                    f"Max. offene Positionen erreicht ({open_positions}/{max_pos})"
+                )
         pip_value = data.get("pip_value", 10.0)
         pip_size = data.get("pip_size", self._infer_pip_size(symbol, entry_price))
         ohlcv: Optional[pd.DataFrame] = data.get("ohlcv")

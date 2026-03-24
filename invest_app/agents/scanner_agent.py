@@ -145,8 +145,20 @@ class ScannerAgent:
             else:
                 score -= 10
 
-            # Spread-Bonus (default OK, kein Tick-Abruf erforderlich)
-            score += 15
+            # P1.3: Spread-Check via MT5-Tick wenn verfügbar, sonst kein Bonus
+            if hasattr(self.connector, "get_current_spread_pips"):
+                try:
+                    spread_pips = self.connector.get_current_spread_pips(symbol)
+                    normal_spreads = getattr(self.config, "normal_spread_pips", {})
+                    multiplier = getattr(self.config, "spread_filter_multiplier", 3.0)
+                    if spread_pips > 0 and symbol in normal_spreads:
+                        normal = normal_spreads[symbol]
+                        if spread_pips <= normal * multiplier:
+                            score += 15
+                    elif spread_pips == 0:
+                        score += 15  # kein Tick verfügbar → neutral
+                except Exception:
+                    pass  # kein Bonus bei Fehler
 
             # Rundes Level
             magnitude = 10 ** max(0, len(str(int(current))) - 1)

@@ -117,11 +117,12 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         TrendAgent(ema_periods=config.ema_periods),
         VolatilityAgent(atr_period=config.atr_period),
         LevelAgent(),
-        EntryAgent(),
+        EntryAgent(config=config),
         RiskAgent(
             sl_atr_multiplier=config.atr_sl_multiplier,
             min_crv=config.min_crv,
             risk_per_trade=config.risk_per_trade,
+            config=config,
         ),
         ValidationAgent(claude_client=claude),
         ReportingAgent(output_dir=config.output_dir),

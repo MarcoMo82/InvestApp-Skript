@@ -83,6 +83,8 @@ class Orchestrator:
         self._kill_switch = threading.Event()
         self._cycle_count = 0
         self._daily_pnl = 0.0
+        self._daily_loss_triggered: bool = False
+        self._last_cycle_date: Optional[object] = None
 
     def run_cycle(self) -> list[Signal]:
         """
@@ -95,10 +97,25 @@ class Orchestrator:
             logger.warning("Kill-Switch aktiv – Zyklus übersprungen.")
             return []
 
-        # Daily Loss Check
-        if not self._check_daily_loss_limit():
-            logger.warning("Daily-Loss-Limit erreicht – Zyklus übersprungen.")
+        # P1.2: Tages-Reset
+        today = datetime.now(timezone.utc).date()
+        if self._last_cycle_date != today:
+            self._last_cycle_date = today
+            self._daily_loss_triggered = False
+            logger.debug("Neuer Tag – Daily-Loss-Flag zurückgesetzt.")
+
+        # P1.2: Daily Drawdown Check
+        if not self._check_daily_drawdown():
+            logger.warning("Daily Drawdown Limit erreicht – kein weiteres Trading heute")
             return []
+
+        # P1.1: Offene Positionen einmalig pro Zyklus zählen
+        open_positions = 0
+        if hasattr(self.connector, "get_open_positions_count"):
+            try:
+                open_positions = self.connector.get_open_positions_count()
+            except Exception as e:
+                logger.debug(f"get_open_positions_count Fehler: {e}")
 
         self._cycle_count += 1
         cycle_id = f"cycle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{self._cycle_count}"
@@ -116,7 +133,7 @@ class Orchestrator:
 
         for symbol in symbols:
             try:
-                signal = self._analyze_symbol(symbol)
+                signal = self._analyze_symbol(symbol, open_positions=open_positions)
                 if signal:
                     all_signals.append(signal)
                     self.db.save_signal(signal)
@@ -168,7 +185,7 @@ class Orchestrator:
         )
         return all_signals
 
-    def _analyze_symbol(self, symbol: str) -> Optional[Signal]:
+    def _analyze_symbol(self, symbol: str, open_positions: int = 0) -> Optional[Signal]:
         """Führt die vollständige Agent-Pipeline für ein Symbol aus."""
         logger.debug(f"Analysiere {symbol} ...")
 
@@ -213,20 +230,28 @@ class Orchestrator:
             "current_price": current_price,
         })
 
-        # 5. Entry-Analyse
+        # 5. Entry-Analyse (P1.3: aktuellen Spread übergeben)
+        spread_pips = 0.0
+        if hasattr(self.connector, "get_current_spread_pips"):
+            try:
+                spread_pips = self.connector.get_current_spread_pips(symbol)
+            except Exception as e:
+                logger.debug(f"get_current_spread_pips Fehler für {symbol}: {e}")
+
         entry_result = self.entry_agent.run({
             "symbol": symbol,
             "ohlcv_entry": ohlcv_entry,
             "direction": direction,
             "nearest_level": level_result.get("nearest_level"),
             "atr_value": vol_result.get("atr_value", 0.0),
+            "current_spread_pips": spread_pips,
         })
 
         if not entry_result.get("entry_found", False):
             logger.debug(f"{symbol}: Kein Entry-Setup")
             return None
 
-        # 6. Risk-Analyse
+        # 6. Risk-Analyse (P1.1: open_positions übergeben)
         balance = self.connector.get_account_balance()
         risk_result = self.risk_agent.run({
             "symbol": symbol,
@@ -234,6 +259,7 @@ class Orchestrator:
             "entry_price": entry_result.get("entry_price", current_price),
             "atr_value": vol_result.get("atr_value", 0.0),
             "account_balance": balance,
+            "open_positions": open_positions,
         })
 
         if not risk_result.get("trade_allowed", False):
@@ -417,6 +443,47 @@ class Orchestrator:
                 logger.warning(f"Fallback-Order fehlgeschlagen für {signal.instrument}")
         except Exception as e:
             logger.error(f"Fallback-Order Fehler für {signal.instrument}: {e}")
+
+    def _check_daily_drawdown(self) -> bool:
+        """
+        Prüft tägliches Drawdown-Limit. Setzt _daily_loss_triggered wenn überschritten.
+
+        Returns:
+            True  → Trading erlaubt
+            False → Limit überschritten, Trading gestoppt
+        """
+        if self._daily_loss_triggered:
+            return False
+
+        try:
+            account_balance = (
+                self.connector.get_account_balance()
+                if hasattr(self.connector, "get_account_balance")
+                else 10000.0
+            )
+            max_loss = account_balance * self.config.max_daily_loss
+            # Basis: DB-Wert
+            daily_pnl = self.db.get_daily_pnl()
+
+            # MT5-History bevorzugen wenn Connector wirklich verbunden (kein Mock)
+            connected = getattr(self.connector, "_connected", False)
+            if connected is True and hasattr(self.connector, "get_today_realized_pnl"):
+                try:
+                    daily_pnl = self.connector.get_today_realized_pnl()
+                except Exception:
+                    pass  # DB-Wert bleibt
+
+            if daily_pnl < -max_loss:
+                self._daily_loss_triggered = True
+                logger.warning(
+                    f"Daily Drawdown Limit erreicht: {daily_pnl:.2f} "
+                    f"(Limit: -{max_loss:.2f})"
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Daily drawdown check Fehler: {e}")
+            return True  # Im Fehlerfall: weitermachen
 
     def _check_daily_loss_limit(self) -> bool:
         """

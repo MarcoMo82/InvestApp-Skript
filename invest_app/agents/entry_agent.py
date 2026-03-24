@@ -18,9 +18,10 @@ class EntryAgent(BaseAgent):
     Erkennt Breakouts, Pullbacks und Rejection-Setups.
     """
 
-    def __init__(self, confirmation_candles: int = 1) -> None:
+    def __init__(self, confirmation_candles: int = 1, config: Any = None) -> None:
         super().__init__("entry_agent")
         self.confirmation_candles = confirmation_candles
+        self._config = config
 
     def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -40,6 +41,20 @@ class EntryAgent(BaseAgent):
         direction = data.get("direction", "neutral")
         nearest_level = data.get("nearest_level")
         atr = data.get("atr_value", 0.0)
+
+        # P1.3: Spread-Filter
+        current_spread_pips = data.get("current_spread_pips", 0.0)
+        if current_spread_pips > 0 and self._config is not None:
+            normal_spreads = getattr(self._config, "normal_spread_pips", {})
+            multiplier = getattr(self._config, "spread_filter_multiplier", 3.0)
+            if symbol in normal_spreads:
+                normal = normal_spreads[symbol]
+                if current_spread_pips > normal * multiplier:
+                    ratio = current_spread_pips / normal
+                    return self._no_entry(
+                        symbol,
+                        f"Spread zu hoch ({ratio:.1f}x Normal-Spread)"
+                    )
 
         if df.empty or len(df) < 10:
             return self._no_entry(symbol, "Unzureichende Daten")
