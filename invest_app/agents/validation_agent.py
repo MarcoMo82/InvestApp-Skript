@@ -147,6 +147,15 @@ class ValidationAgent(BaseAgent):
             # Fallback: regelbasierter Score
             result = self._rule_based_score(macro, trend, vol, level, entry, risk)
 
+        # MTF-Konfluenz berechnen und auf Score anwenden
+        mtf = self._calculate_mtf_confluence(
+            {"macro": macro, "trend": trend, "volatility": vol, "level": level, "entry": entry}
+        )
+        base_score = result.get("confidence_score", 50.0)
+        modified_score = base_score + mtf["modifier"] * 100
+        result["confidence_score"] = min(100.0, max(0.0, modified_score))
+        result["mtf_confluence"] = mtf
+
         result["symbol"] = symbol
         confidence_score = min(max(result.get("confidence_score", 0.0), 0.0), 100.0)
         result["confidence_score"] = confidence_score
@@ -188,6 +197,70 @@ class ValidationAgent(BaseAgent):
         except (json.JSONDecodeError, ValueError) as e:
             self.logger.warning(f"JSON-Parsing fehlgeschlagen: {e}")
             return {"confidence_score": 50.0, "pros": [], "cons": ["Parsing-Fehler"], "validated": False, "summary": ""}
+
+    @staticmethod
+    def _calculate_mtf_confluence(agent_results: dict) -> dict:
+        """
+        Berechnet den Multi-Timeframe-Konfluenz-Score aus allen Agent-Outputs.
+
+        Score-Matrix:
+          5–6 Punkte → triple_confluence  → +0.35
+          3–4 Punkte → dual_confluence    → +0.15
+          1–2 Punkte → weak_confluence    →  0.0
+          0 Punkte   → no_confluence      → ×0.5 (modifier = -0.5)
+        """
+        score = 0
+        details = []
+
+        trend = agent_results.get("trend", {})
+        if trend.get("trend_score", trend.get("strength_score", 0)) >= 7:
+            score += 1
+            details.append("EMA-Alignment stark")
+
+        level = agent_results.get("level", {})
+        if level.get("level_score", level.get("reaction_score", 0) * 10) >= 70:
+            score += 1
+            details.append("Preis an Key-Level")
+
+        entry = agent_results.get("entry", {})
+        if entry.get("confidence", 0) >= 0.6:
+            score += 1
+            details.append("Entry-Setup bestätigt")
+
+        volatility = agent_results.get("volatility", {})
+        rsi = volatility.get("rsi", 50)
+        if 30 < rsi < 70:
+            score += 1
+            details.append("RSI neutral/konform")
+
+        if volatility.get("approved", volatility.get("setup_allowed", False)):
+            score += 1
+            details.append("Session aktiv")
+
+        macro = agent_results.get("macro", {})
+        if macro.get("approved", macro.get("trading_allowed", False)):
+            score += 1
+            details.append("Makro-Bias kongruent")
+
+        if score >= 5:
+            modifier = 0.35
+            label = "triple_confluence"
+        elif score >= 3:
+            modifier = 0.15
+            label = "dual_confluence"
+        elif score >= 1:
+            modifier = 0.0
+            label = "weak_confluence"
+        else:
+            modifier = -0.5
+            label = "no_confluence"
+
+        return {
+            "confluence_score": score,
+            "modifier": modifier,
+            "label": label,
+            "details": details,
+        }
 
     def _rule_based_score(
         self, macro: dict, trend: dict, vol: dict, level: dict, entry: dict, risk: dict

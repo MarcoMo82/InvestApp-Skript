@@ -1,23 +1,27 @@
 """
 News Fetcher für Yahoo Finance und Finanz-Nachrichtenquellen.
-Beinhaltet Caching mit 5-Minuten TTL.
+Beinhaltet zweistufiges Caching: in-memory (session) + persistenter JSON-Cache auf Disk.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
 import yfinance as yf
 from bs4 import BeautifulSoup
 
+from config import Config, config as _default_config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-CACHE_TTL_SECONDS = 300  # 5 Minuten
+CACHE_TTL_SECONDS = 3600  # 60 Minuten
+CACHE_FILE = Path(__file__).parent.parent / "Output" / "news_cache.json"
 
 
 class _CacheEntry:
@@ -33,14 +37,49 @@ class NewsFetcher:
     """
     Holt und cached Finanznachrichten aus Yahoo Finance und anderen Quellen.
     Unterstützt symbol-spezifische und allgemeine Marktnachrichten.
+    Zweistufiger Cache: in-memory (verhindert mehrfache Disk-Reads) + Disk (überlebt Neustart).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: Config | None = None) -> None:
+        self.config = cfg or _default_config
         self._cache: dict[str, _CacheEntry] = {}
+        yahoo_status = "aktiv" if self.config.news_yahoo_enabled else "deaktiviert"
+        logger.info(f"[News] Quelle: MetaTrader 5 | Yahoo-API: {yahoo_status}")
+
+    def _load_disk_cache(self) -> dict:
+        """Lädt den persistenten Cache von Disk."""
+        if not CACHE_FILE.exists():
+            return {}
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_disk_cache(self, cache: dict) -> None:
+        """Speichert den Cache auf Disk."""
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Disk-Cache konnte nicht gespeichert werden: {e}")
+
+    def _is_disk_cache_valid(self, cache_entry: dict) -> bool:
+        """Prüft ob ein Disk-Cache-Eintrag noch gültig ist (< 60 Minuten alt)."""
+        if "timestamp" not in cache_entry:
+            return False
+        try:
+            cached_at = datetime.fromisoformat(cache_entry["timestamp"])
+            age = datetime.now(timezone.utc) - cached_at
+            return age.total_seconds() < CACHE_TTL_SECONDS
+        except Exception:
+            return False
 
     def get_yahoo_news(self, symbol: str) -> list[dict]:
         """
         Holt aktuelle Nachrichten für ein Symbol von Yahoo Finance.
+        Prüft zuerst in-memory Cache, dann Disk-Cache, dann API.
 
         Args:
             symbol: Ticker-Symbol, z.B. 'AAPL', 'BTC-USD'
@@ -48,12 +87,32 @@ class NewsFetcher:
         Returns:
             Liste von Nachrichten-Dicts mit: title, publisher, link, published_at, summary
         """
+        if not self.config.news_yahoo_enabled:
+            logger.debug("[News] Yahoo/externe API deaktiviert (NEWS_YAHOO_ENABLED=False)")
+            return []
+
         cache_key = f"yahoo_{symbol}"
+
+        # Schicht 1: in-memory Cache (verhindert mehrfache Disk-Reads in derselben Session)
         cached = self._cache.get(cache_key)
         if cached and cached.is_valid():
-            logger.debug(f"News-Cache Hit: {cache_key}")
+            logger.debug(f"News-Cache Hit (memory): {cache_key}")
             return cached.data
 
+        # Schicht 2: Disk-Cache (überlebt App-Neustart)
+        disk_cache = self._load_disk_cache()
+        disk_key = f"news_{symbol}"
+        if disk_key in disk_cache and self._is_disk_cache_valid(disk_cache[disk_key]):
+            articles = disk_cache[disk_key]["articles"]
+            age_min = int(
+                (datetime.now(timezone.utc) - datetime.fromisoformat(disk_cache[disk_key]["timestamp"]))
+                .total_seconds() / 60
+            )
+            logger.info(f"News aus Disk-Cache: {symbol} | Alter: {age_min} Min")
+            self._cache[cache_key] = _CacheEntry(articles)
+            return articles
+
+        # Schicht 3: API-Aufruf
         try:
             ticker = yf.Ticker(symbol)
             raw_news = ticker.news or []
@@ -95,8 +154,14 @@ class NewsFetcher:
                         "symbol": symbol,
                     })
 
+            # In beide Caches schreiben
             self._cache[cache_key] = _CacheEntry(news)
-            logger.info(f"Yahoo News geladen: {symbol} | {len(news)} Artikel")
+            disk_cache[disk_key] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "articles": news,
+            }
+            self._save_disk_cache(disk_cache)
+            logger.info(f"Yahoo News geladen und gecacht: {symbol} | {len(news)} Artikel")
             return news
 
         except Exception as e:
@@ -114,15 +179,39 @@ class NewsFetcher:
         Returns:
             Liste von Nachrichten-Dicts
         """
+        if not self.config.news_yahoo_enabled:
+            logger.debug("[News] Yahoo/externe API deaktiviert (NEWS_YAHOO_ENABLED=False)")
+            return []
+
         cache_key = f"markt_{query}"
+
+        # Schicht 1: in-memory
         cached = self._cache.get(cache_key)
         if cached and cached.is_valid():
-            logger.debug(f"News-Cache Hit: {cache_key}")
+            logger.debug(f"News-Cache Hit (memory): {cache_key}")
             return cached.data
 
-        news = self._fetch_yahoo_market_news(query)
+        # Schicht 2: Disk-Cache
+        disk_cache = self._load_disk_cache()
+        disk_key = f"markt_{query}"
+        if disk_key in disk_cache and self._is_disk_cache_valid(disk_cache[disk_key]):
+            articles = disk_cache[disk_key]["articles"]
+            age_min = int(
+                (datetime.now(timezone.utc) - datetime.fromisoformat(disk_cache[disk_key]["timestamp"]))
+                .total_seconds() / 60
+            )
+            logger.info(f"Markt-News aus Disk-Cache: {query} | Alter: {age_min} Min")
+            self._cache[cache_key] = _CacheEntry(articles)
+            return articles
 
+        # Schicht 3: Neu laden
+        news = self._fetch_yahoo_market_news(query)
         self._cache[cache_key] = _CacheEntry(news)
+        disk_cache[disk_key] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "articles": news,
+        }
+        self._save_disk_cache(disk_cache)
         return news
 
     def get_economic_calendar_summary(self) -> str:
@@ -170,16 +259,28 @@ class NewsFetcher:
             logger.error(f"Fehler beim Laden der Markt-News: {e}")
             return []
 
-    def clear_cache(self) -> None:
-        """Leert den gesamten News-Cache."""
+    def clear_cache(self, disk: bool = False) -> None:
+        """Leert den News-Cache. Mit disk=True auch die persistente Cache-Datei."""
         self._cache.clear()
-        logger.debug("News-Cache geleert.")
+        if disk and CACHE_FILE.exists():
+            try:
+                CACHE_FILE.unlink()
+                logger.debug("Disk-Cache gelöscht.")
+            except Exception as e:
+                logger.warning(f"Disk-Cache konnte nicht gelöscht werden: {e}")
+        logger.debug("In-Memory News-Cache geleert.")
 
     def cache_stats(self) -> dict:
-        """Gibt Cache-Statistiken zurück."""
+        """Gibt Cache-Statistiken zurück (memory + disk)."""
         valid = sum(1 for e in self._cache.values() if e.is_valid())
+        disk_cache = self._load_disk_cache()
+        disk_valid = sum(1 for v in disk_cache.values() if self._is_disk_cache_valid(v))
         return {
-            "total_entries": len(self._cache),
-            "valid_entries": valid,
-            "expired_entries": len(self._cache) - valid,
+            "memory_total": len(self._cache),
+            "memory_valid": valid,
+            "memory_expired": len(self._cache) - valid,
+            "disk_total": len(disk_cache),
+            "disk_valid": disk_valid,
+            "disk_expired": len(disk_cache) - disk_valid,
+            "disk_cache_file": str(CACHE_FILE),
         }

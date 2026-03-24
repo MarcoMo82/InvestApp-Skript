@@ -23,15 +23,17 @@ class VolatilityAgent(BaseAgent):
     def __init__(
         self,
         atr_period: int = 14,
-        min_atr_pct: float = 0.0003,  # Mindest-ATR als % des Preises
-        max_atr_pct: float = 0.015,   # Maximale ATR (zu hohe Volatilität)
+        min_atr_ratio: float = 0.5,   # Mindest-Ratio: ATR / 20P-Durchschnitt
+        max_atr_ratio: float = 2.0,   # Maximal-Ratio: ATR / 20P-Durchschnitt
+        min_atr_pct: float = 0.0,     # Mindest-ATR in % des Preises (0 = deaktiviert)
         config: Any = None,
         data_connector: Any = None,
     ) -> None:
         super().__init__("volatility_agent")
         self.atr_period = atr_period if config is None else getattr(config, "atr_period", atr_period)
+        self.min_atr_ratio = min_atr_ratio
+        self.max_atr_ratio = max_atr_ratio
         self.min_atr_pct = min_atr_pct
-        self.max_atr_pct = max_atr_pct
         self._config = config
         self._data_connector = data_connector
 
@@ -48,7 +50,8 @@ class VolatilityAgent(BaseAgent):
 
         Output:
             volatility_ok, market_phase, setup_allowed, atr_value, atr_pct,
-            session, is_compression, is_expansion
+            session, is_compression, is_expansion, rsi, rsi_status,
+            rsi_divergence, bb_status, bb_bandwidth, approved
         """
         # Direktaufruf mit symbol= Keyword-Argument
         if symbol is not None and (data is None or not isinstance(data, dict)):
@@ -64,15 +67,38 @@ class VolatilityAgent(BaseAgent):
         sym = self._require_field(data, "symbol")
         df: pd.DataFrame = self._require_field(data, "ohlcv")
 
-        if df.empty or len(df) < self.atr_period + 1:
+        if df.empty or len(df) < self.atr_period + 20 + 1:
             return self._default_result(sym, "Unzureichende Daten")
 
-        # ATR berechnen
-        atr = self._calculate_atr(df)
+        # ATR-Serie und Ratio berechnen (Handbuch: ATR vs. 20P-Durchschnitt)
+        atr_series = self._calculate_atr_series(df)
+        atr = float(atr_series.iloc[-1])
         if pd.isna(atr) or atr == 0:
             return self._default_result(sym, "Zu wenig Daten für ATR-Berechnung")
+        atr_avg_20 = float(atr_series.rolling(20).mean().iloc[-1])
         close = float(df["close"].iloc[-1])
         atr_pct = atr / close if close > 0 else 0.0
+
+        if atr_avg_20 > 0:
+            atr_ratio = atr / atr_avg_20
+        else:
+            atr_ratio = 1.0
+
+        # Handbuch-Filter: Mindest-ATR in % des Preises (falls konfiguriert)
+        if self.min_atr_pct > 0 and atr_pct < self.min_atr_pct:
+            return {**self._default_result(sym, f"ATR zu niedrig (< {self.min_atr_pct:.2%} des Preises)"),
+                    "atr_value": round(atr, 6), "atr_pct": round(atr_pct, 6),
+                    "atr_ratio": round(atr_ratio, 4)}
+
+        # Handbuch-Filter: Ratio < 0.5 → zu ruhig; > 2.0 → zu volatil
+        if atr_ratio < self.min_atr_ratio:
+            return {**self._default_result(sym, "ATR zu niedrig (< 50% des 20P-Durchschnitts)"),
+                    "atr_value": round(atr, 6), "atr_pct": round(atr_pct, 6),
+                    "atr_ratio": round(atr_ratio, 4)}
+        if atr_ratio > self.max_atr_ratio:
+            return {**self._default_result(sym, "ATR zu hoch (> 200% des 20P-Durchschnitts)"),
+                    "atr_value": round(atr, 6), "atr_pct": round(atr_pct, 6),
+                    "atr_ratio": round(atr_ratio, 4)}
 
         # Session bestimmen
         session = self._get_current_session()
@@ -81,12 +107,8 @@ class VolatilityAgent(BaseAgent):
         is_compression = self._detect_compression(df)
         is_expansion = self._detect_expansion(df, atr)
 
-        # Volatilität bewerten
-        volatility_ok = (
-            atr_pct >= self.min_atr_pct
-            and atr_pct <= self.max_atr_pct
-            and session in ("london", "new_york", "london_ny_overlap")
-        )
+        # Volatilität ok wenn Session aktiv
+        volatility_ok = session in ("london", "new_york", "london_ny_overlap")
 
         # Marktphase klassifizieren
         if is_compression:
@@ -99,9 +121,30 @@ class VolatilityAgent(BaseAgent):
         # Setup erlaubt wenn Volatilität ok und nicht in reiner Compression
         setup_allowed = volatility_ok and market_phase != "compression"
 
+        # RSI berechnen
+        rsi_series = self._calculate_rsi(df)
+        rsi_value = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
+        rsi_status = self._get_rsi_status(rsi_value)
+        rsi_divergence = self._check_rsi_divergence(df, rsi_series)
+
+        # Bollinger Bands berechnen
+        bb_upper, bb_mid, bb_lower, bb_bandwidth_series = self._calculate_bollinger_bands(df)
+        bb_bandwidth = float(bb_bandwidth_series.iloc[-1]) if not bb_bandwidth_series.empty else 0.02
+        bb_status = self._get_bb_status(df, bb_upper, bb_lower, bb_bandwidth)
+
+        # Confidence-Anpassungen durch RSI und BB
+        confidence_modifier = 0.0
+        if rsi_divergence:
+            confidence_modifier -= 0.10
+        if bb_status == "squeeze":
+            confidence_modifier += 0.05
+        elif bb_status in ("above_upper", "below_lower"):
+            confidence_modifier -= 0.10
+
         self.logger.debug(
-            f"{sym} | ATR: {atr:.5f} ({atr_pct:.3%}) | "
-            f"Phase: {market_phase} | Session: {session} | OK: {volatility_ok}"
+            f"{sym} | ATR: {atr:.5f} ({atr_pct:.3%}) | Ratio: {atr_ratio:.2f} | "
+            f"Phase: {market_phase} | Session: {session} | OK: {volatility_ok} | "
+            f"RSI: {rsi_value:.1f} ({rsi_status}) | BB: {bb_status}"
         )
 
         return {
@@ -109,15 +152,129 @@ class VolatilityAgent(BaseAgent):
             "volatility_ok": volatility_ok,
             "market_phase": market_phase,
             "setup_allowed": setup_allowed,
+            "approved": setup_allowed,
             "atr_value": round(atr, 6),
             "atr_pct": round(atr_pct, 6),
+            "atr_ratio": round(atr_ratio, 4),
             "session": session,
             "is_compression": is_compression,
             "is_expansion": is_expansion,
+            "rsi": round(rsi_value, 2),
+            "rsi_status": rsi_status,
+            "rsi_divergence": rsi_divergence,
+            "bb_status": bb_status,
+            "bb_bandwidth": round(bb_bandwidth, 6),
+            "confidence_modifier": round(confidence_modifier, 2),
         }
 
-    def _calculate_atr(self, df: pd.DataFrame) -> float:
-        """Berechnet den Average True Range."""
+    def _calculate_rsi(self, ohlcv: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Berechnet den RSI(14) für die Schlusskurse."""
+        delta = ohlcv["close"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+        avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    @staticmethod
+    def _get_rsi_status(rsi: float) -> str:
+        """Klassifiziert den RSI-Wert."""
+        if rsi > 70:
+            return "overbought"
+        elif rsi < 30:
+            return "oversold"
+        elif 40 <= rsi <= 60:
+            return "neutral"
+        elif rsi > 60:
+            return "bullish"
+        else:
+            return "bearish"
+
+    @staticmethod
+    def _check_rsi_divergence(ohlcv: pd.DataFrame, rsi_series: pd.Series, lookback: int = 20) -> bool:
+        """
+        Bearische RSI-Divergenz: Preis macht neues Hoch, RSI nicht.
+        Gibt True zurück wenn bearische Divergenz erkannt.
+        """
+        if len(ohlcv) < lookback or len(rsi_series) < lookback:
+            return False
+
+        price_window = ohlcv["high"].iloc[-lookback:]
+        rsi_window = rsi_series.iloc[-lookback:]
+
+        # Valide Werte filtern
+        valid_mask = rsi_window.notna()
+        if valid_mask.sum() < 2:
+            return False
+
+        price_window = price_window[valid_mask]
+        rsi_window = rsi_window[valid_mask]
+
+        price_recent_high = float(price_window.iloc[-5:].max())
+        price_prior_high = float(price_window.iloc[:-5].max())
+        rsi_recent_high = float(rsi_window.iloc[-5:].max())
+        rsi_prior_high = float(rsi_window.iloc[:-5].max())
+
+        # Bearische Divergenz: Preis höher, RSI tiefer
+        return price_recent_high > price_prior_high and rsi_recent_high < rsi_prior_high
+
+    def _calculate_bollinger_bands(
+        self, ohlcv: pd.DataFrame, period: int = 20, std_dev: float = 2.0
+    ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+        """Berechnet Bollinger Bands (20, 2.0)."""
+        mid = ohlcv["close"].rolling(period).mean()
+        std = ohlcv["close"].rolling(period).std()
+        upper = mid + std_dev * std
+        lower = mid - std_dev * std
+        bandwidth = (upper - lower) / mid  # relative Bandbreite
+        return upper, mid, lower, bandwidth
+
+    @staticmethod
+    def _get_bb_status(
+        ohlcv: pd.DataFrame,
+        bb_upper: pd.Series,
+        bb_lower: pd.Series,
+        bandwidth: float,
+        squeeze_threshold: float = 0.01,
+        walk_lookback: int = 3,
+    ) -> str:
+        """Bestimmt den Bollinger-Band-Status."""
+        if pd.isna(bandwidth) or bandwidth == 0:
+            return "neutral"
+
+        close = ohlcv["close"]
+        last_close = float(close.iloc[-1])
+        last_upper = float(bb_upper.iloc[-1])
+        last_lower = float(bb_lower.iloc[-1])
+
+        if bandwidth < squeeze_threshold:
+            return "squeeze"
+
+        # Preis außerhalb der Bänder
+        if last_close > last_upper:
+            return "above_upper"
+        if last_close < last_lower:
+            return "below_lower"
+
+        # BB-Walk: Preis schließt wiederholt am oberen/unteren Band
+        recent_closes = close.iloc[-walk_lookback:]
+        recent_upper = bb_upper.iloc[-walk_lookback:]
+        recent_lower = bb_lower.iloc[-walk_lookback:]
+
+        if all(c >= u * 0.998 for c, u in zip(recent_closes, recent_upper)):
+            return "upper_walk"
+        if all(c <= l * 1.002 for c, l in zip(recent_closes, recent_lower)):
+            return "lower_walk"
+
+        # Bandbreite wächst → Expansion
+        if bandwidth > squeeze_threshold * 2:
+            return "expansion"
+
+        return "neutral"
+
+    def _calculate_atr_series(self, df: pd.DataFrame) -> "pd.Series":
+        """Berechnet den ATR als vollständige Serie (EWM)."""
         high = df["high"]
         low = df["low"]
         close = df["close"]
@@ -128,8 +285,11 @@ class VolatilityAgent(BaseAgent):
             (low - close.shift(1)).abs(),
         ], axis=1).max(axis=1)
 
-        atr = tr.ewm(span=self.atr_period, adjust=False).mean().iloc[-1]
-        return float(atr)
+        return tr.ewm(span=self.atr_period, adjust=False).mean()
+
+    def _calculate_atr(self, df: pd.DataFrame) -> float:
+        """Berechnet den Average True Range (letzter Wert)."""
+        return float(self._calculate_atr_series(df).iloc[-1])
 
     def _detect_compression(self, df: pd.DataFrame, lookback: int = 10) -> bool:
         """
@@ -197,10 +357,17 @@ class VolatilityAgent(BaseAgent):
             "volatility_ok": False,
             "market_phase": "unknown",
             "setup_allowed": False,
+            "approved": False,
             "atr_value": 0.0,
             "atr_pct": 0.0,
             "session": "unknown",
             "is_compression": False,
             "is_expansion": False,
+            "rsi": 50.0,
+            "rsi_status": "neutral",
+            "rsi_divergence": False,
+            "bb_status": "neutral",
+            "bb_bandwidth": 0.0,
+            "confidence_modifier": 0.0,
             "error": reason,
         }

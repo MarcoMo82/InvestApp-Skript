@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from typing import Any
+
 from agents.base_agent import BaseAgent
 from utils.claude_client import ClaudeClient
 from data.news_fetcher import NewsFetcher
@@ -38,10 +40,16 @@ Regeln:
 class MacroAgent(BaseAgent):
     """LLM-gestützter Makro-Analyse-Agent."""
 
-    def __init__(self, claude_client: ClaudeClient, news_fetcher: NewsFetcher) -> None:
+    def __init__(
+        self,
+        claude_client: ClaudeClient,
+        news_fetcher: NewsFetcher,
+        data_connector: Any = None,
+    ) -> None:
         super().__init__("macro_agent")
         self.claude = claude_client
         self.news_fetcher = news_fetcher
+        self.data_connector = data_connector
 
     def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -55,11 +63,16 @@ class MacroAgent(BaseAgent):
         """
         symbol = self._require_field(data, "symbol")
 
-        # News holen
+        # News holen (Yahoo Finance + MT5 falls verfügbar)
         news_items = self.news_fetcher.get_yahoo_news(symbol)
         market_news = self.news_fetcher.get_finanznachrichten()
+        mt5_news = (
+            self.data_connector.get_news(hours_back=4)
+            if hasattr(self, "data_connector") and hasattr(self.data_connector, "get_news")
+            else []
+        )
 
-        all_news = (news_items + market_news)[:10]
+        all_news = (news_items + market_news + mt5_news)[:10]
 
         if not all_news:
             self.logger.warning(f"Keine News für {symbol} – Makro-Analyse mit Standardwerten.")

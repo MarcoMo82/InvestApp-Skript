@@ -21,7 +21,9 @@ from agents.risk_agent import RiskAgent
 from agents.validation_agent import ValidationAgent
 from agents.reporting_agent import ReportingAgent
 from agents.learning_agent import LearningAgent
+from agents.chart_exporter import ChartExporter
 from models.signal import Signal, SignalStatus, Direction
+from models.trade import Trade
 from utils.logger import get_logger
 from utils.database import Database
 
@@ -57,6 +59,8 @@ class Orchestrator:
         database: Database,
         learning_agent: Optional[LearningAgent] = None,
         watch_agent: Optional["WatchAgent"] = None,
+        chart_exporter: Optional[ChartExporter] = None,
+        scanner_agent: Optional[Any] = None,
     ) -> None:
         self.config = config
         self.connector = connector
@@ -70,6 +74,9 @@ class Orchestrator:
         self.reporting_agent = reporting_agent
         self.learning_agent = learning_agent
         self.watch_agent = watch_agent
+        self.chart_exporter = chart_exporter
+        self.scanner_agent = scanner_agent
+        self.active_symbols: list = list(getattr(config, "all_symbols", []))
         self.db = database
 
         self._scheduler: Optional[BackgroundScheduler] = None
@@ -89,7 +96,7 @@ class Orchestrator:
             return []
 
         # Daily Loss Check
-        if self._check_daily_loss_limit():
+        if not self._check_daily_loss_limit():
             logger.warning("Daily-Loss-Limit erreicht – Zyklus übersprungen.")
             return []
 
@@ -97,8 +104,15 @@ class Orchestrator:
         cycle_id = f"cycle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{self._cycle_count}"
         logger.info(f"=== Zyklus {self._cycle_count} gestartet ({cycle_id}) ===")
 
+        symbols = self.active_symbols if self.active_symbols else getattr(self.config, "all_symbols", [])
+
+        if getattr(self.config, "show_cycle_banner", True):
+            now = datetime.now().strftime("%H:%M:%S")
+            print(f"\n{'─' * 50}")
+            print(f" Zyklus #{self._cycle_count} | {now} | {len(symbols)} Symbole")
+            print(f"{'─' * 50}")
+
         all_signals: list[Signal] = []
-        symbols = self.config.all_symbols
 
         for symbol in symbols:
             try:
@@ -106,8 +120,19 @@ class Orchestrator:
                 if signal:
                     all_signals.append(signal)
                     self.db.save_signal(signal)
+                    if self.chart_exporter is not None:
+                        self.chart_exporter.export_zones(
+                            symbol, signal.agent_scores or {}, signal
+                        )
             except Exception as e:
                 logger.error(f"Fehler bei {symbol}: {e}", exc_info=True)
+
+        # Chart-Export speichern
+        if self.chart_exporter is not None:
+            try:
+                self.chart_exporter.save()
+            except Exception as e:
+                logger.warning(f"ChartExporter Fehler: {e}")
 
         # Reporting
         if all_signals:
@@ -123,14 +148,15 @@ class Orchestrator:
         approved = [s for s in all_signals if s.status == SignalStatus.APPROVED]
 
         # Signale weiterleiten: Watch-Agent übernimmt Ausführung (kein doppelter place_order)
+        trading_mode = getattr(self.config, "trading_mode", "analysis")
         for signal in approved:
             instrument = signal.instrument
             signal_dict = signal.model_dump(mode="json")
             if self.watch_agent is not None:
                 self.watch_agent.add_pending_signal(signal_dict)
                 logger.info(f"Signal an Watch-Agent übergeben: {instrument}")
-            else:
-                # Fallback: direkter Market-Entry
+            elif trading_mode in ("demo", "live"):
+                # Fallback: direkter Market-Entry (nur in demo/live Modus)
                 self._place_and_save_order(signal)
 
         # Positions-Status überwachen (nur Logging + Daily-Loss, kein Partial-Exit)
@@ -278,7 +304,7 @@ class Orchestrator:
         )
 
     def start_scheduler(self) -> None:
-        """Startet den APScheduler für automatische Zyklen alle 15 Minuten."""
+        """Startet den APScheduler für automatische Zyklen alle 5 Minuten."""
         self._scheduler = BackgroundScheduler()
         self._scheduler.add_job(
             func=self.run_cycle,
@@ -287,6 +313,25 @@ class Orchestrator:
             name="InvestApp Hauptzyklus",
             replace_existing=True,
         )
+        if self.watch_agent is not None:
+            self._scheduler.add_job(
+                func=self.watch_agent.run_watch_cycle,
+                trigger=IntervalTrigger(minutes=1),
+                id="watch_agent_cycle",
+                name="Watch-Agent (1min)",
+                replace_existing=True,
+            )
+            logger.info("Watch-Agent gestartet (1-Minuten-Intervall).")
+        if self.scanner_agent is not None:
+            scanner_interval = getattr(self.config, "scanner_interval_minutes", 60)
+            self._scheduler.add_job(
+                func=self._run_scanner,
+                trigger=IntervalTrigger(minutes=scanner_interval),
+                id="scanner_cycle",
+                name=f"Scanner ({scanner_interval}min)",
+                replace_existing=True,
+            )
+            logger.info(f"Scanner-Job gestartet ({scanner_interval}-Minuten-Intervall).")
         self._scheduler.start()
         logger.info(
             f"Scheduler gestartet – Zyklus alle {self.config.cycle_interval_minutes} Minuten."
@@ -297,6 +342,28 @@ class Orchestrator:
         if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=True)
             logger.info("Scheduler gestoppt.")
+
+    def _run_scanner(self) -> None:
+        """Führt einen Scanner-Lauf durch und aktualisiert active_symbols.
+        Fallback auf config.all_symbols wenn Scanner deaktiviert oder scan() leer zurückgibt.
+        """
+        if self.scanner_agent is None:
+            self.active_symbols = list(getattr(self.config, "all_symbols", []))
+            return
+        try:
+            previous = list(self.active_symbols)
+            results = self.scanner_agent.scan()
+            if results:
+                self.active_symbols = results
+                self.scanner_agent.log_watchlist(previous if previous else None)
+                logger.info(f"[Scanner] {len(self.active_symbols)} aktive Symbole nach Scan")
+            else:
+                self.active_symbols = list(getattr(self.config, "all_symbols", []))
+                logger.info(f"[Scanner] scan() leer – Fallback auf {len(self.active_symbols)} config-Symbole")
+        except Exception as e:
+            logger.warning(f"[Scanner] Scan fehlgeschlagen – Fallback auf config.all_symbols: {e}")
+            if not self.active_symbols:
+                self.active_symbols = list(getattr(self.config, "all_symbols", []))
 
     def activate_kill_switch(self) -> None:
         """Aktiviert den Kill-Switch – unterbricht alle weiteren Zyklen."""
@@ -327,29 +394,86 @@ class Orchestrator:
     def _place_and_save_order(self, signal: Signal) -> None:
         """
         Fallback: Platziert eine Order direkt wenn kein Watch-Agent vorhanden.
-        Wird nur genutzt wenn self.watch_agent is None.
+        Wird nur genutzt wenn self.watch_agent is None und trading_mode in (demo, live).
         """
         try:
-            signal_dict = signal.model_dump(mode="json")
-            if hasattr(self.connector, "place_order"):
-                self.connector.place_order(signal_dict)
-            self.db.save_trade(signal_dict)
-            logger.info(f"Fallback-Order platziert: {signal.instrument}")
+            ticket = self.connector.place_order(signal) if hasattr(self.connector, "place_order") else None
+            if ticket:
+                trade = Trade(
+                    signal_id=signal.id,
+                    mt5_ticket=ticket,
+                    instrument=signal.instrument,
+                    direction=str(signal.direction.value) if hasattr(signal.direction, "value") else str(signal.direction),
+                    entry_price=signal.entry_price,
+                    sl=signal.stop_loss,
+                    tp=signal.take_profit,
+                    lot_size=signal.lot_size,
+                    open_time=datetime.now(timezone.utc),
+                    status="open",
+                )
+                self.db.save_trade(trade)
+                logger.info(f"Fallback-Order platziert: {signal.instrument} Ticket={ticket}")
+            else:
+                logger.warning(f"Fallback-Order fehlgeschlagen für {signal.instrument}")
         except Exception as e:
-            logger.error(f"Fallback-Order fehlgeschlagen für {signal.instrument}: {e}")
+            logger.error(f"Fallback-Order Fehler für {signal.instrument}: {e}")
 
     def _check_daily_loss_limit(self) -> bool:
-        """Prüft ob das tägliche Verlustlimit erreicht wurde."""
+        """
+        Prüft ob das tägliche Verlustlimit noch nicht überschritten wurde.
+
+        Returns:
+            True  → Trading erlaubt
+            False → Limit überschritten, Trading stoppen
+        """
         try:
             daily_pnl = self.db.get_daily_pnl()
-            balance = self.connector.get_account_balance()
-            max_loss = balance * self.config.max_daily_loss
+            account_balance = (
+                self.connector.get_account_balance()
+                if hasattr(self.connector, "get_account_balance")
+                else 10000.0
+            )
+            max_loss = account_balance * self.config.max_daily_loss
 
             if daily_pnl < -max_loss:
                 logger.warning(
-                    f"Daily-Loss-Limit erreicht: {daily_pnl:.2f} / Limit: -{max_loss:.2f}"
+                    f"Daily Loss Limit erreicht: {daily_pnl:.2f} (Limit: -{max_loss:.2f})"
                 )
-                return True
+                return False  # Stoppe Trading
+            return True
         except Exception as e:
-            logger.error(f"Daily-Loss-Check fehlgeschlagen: {e}")
-        return False
+            logger.error(f"Daily loss check Fehler: {e}")
+            return True  # Im Fehlerfall: weitermachen
+
+    def _monitor_open_positions(self) -> None:
+        """
+        Gleicht offene DB-Trades mit aktiven MT5-Positionen ab.
+        Schließt Trades in der DB die in MT5 nicht mehr offen sind.
+        """
+        if not hasattr(self.connector, "get_open_positions"):
+            return
+
+        try:
+            db_open = self.db.get_open_trades()
+            if not db_open:
+                return
+
+            mt5_positions = self.connector.get_open_positions()
+            mt5_tickets = {p["ticket"] for p in mt5_positions}
+
+            for trade in db_open:
+                ticket = trade.get("mt5_ticket")
+                if ticket and ticket not in mt5_tickets:
+                    # Trade in MT5 geschlossen – DB aktualisieren
+                    self.db.update_trade_close(
+                        ticket=ticket,
+                        close_price=trade.get("entry_price", 0.0),
+                        pnl=0.0,
+                        close_time=datetime.utcnow(),
+                    )
+                    logger.info(f"Position {ticket} in MT5 geschlossen – DB aktualisiert.")
+
+            self.db.update_performance()
+
+        except Exception as e:
+            logger.error(f"Position-Monitoring Fehler: {e}")

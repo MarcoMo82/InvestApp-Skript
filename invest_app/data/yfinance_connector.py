@@ -153,14 +153,57 @@ class YFinanceConnector:
         )
         return None
 
-    def close_position(self, ticket: int) -> bool:
-        """Nicht verfügbar im yfinance-Modus."""
-        logger.warning("YFinanceConnector: close_position() nicht verfügbar.")
-        return False
+    def close_position(self, ticket: int, lot_size: Optional[float] = None) -> bool:
+        """Nicht verfügbar im yfinance-Modus (Demo: gibt True zurück)."""
+        logger.warning(
+            f"YFinanceConnector: close_position({ticket}, lot={lot_size}) – Demo-Modus."
+        )
+        return True
+
+    def modify_position(self, ticket: int, new_sl: float, new_tp: Optional[float] = None) -> bool:
+        """Simuliertes SL/TP-Update im Demo-Modus."""
+        logger.info(
+            f"YFinanceConnector: modify_position({ticket}) SL={new_sl}, TP={new_tp} – Demo."
+        )
+        return True
 
     def get_open_positions(self) -> list[dict]:
         """Gibt leere Liste zurück (keine echten Positionen)."""
         return []
+
+    def get_news(self, hours_back: int = 4) -> list[dict]:
+        """Fallback: gibt leere Liste zurück (kein MT5)."""
+        return []
+
+    def place_market_order(
+        self,
+        symbol: str,
+        direction: str,
+        lot_size: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Optional[int]:
+        """Nicht verfügbar im yfinance-Modus."""
+        logger.warning("YFinanceConnector: place_market_order() nicht verfügbar.")
+        return None
+
+    def modify_position(self, ticket: int, new_sl: float) -> bool:
+        """Nicht verfügbar im yfinance-Modus."""
+        logger.warning("YFinanceConnector: modify_position() nicht verfügbar.")
+        return False
+
+    def close_partial_position(self, ticket: int, lot_size: float) -> bool:
+        """Nicht verfügbar im yfinance-Modus."""
+        logger.warning("YFinanceConnector: close_partial_position() nicht verfügbar.")
+        return False
+
+    def get_symbols(self) -> list[str]:
+        """Nicht verfügbar im yfinance-Modus – ScannerAgent fällt auf config.all_symbols zurück."""
+        return []
+
+    def get_tick(self, symbol: str) -> dict:
+        """Nicht verfügbar im yfinance-Modus."""
+        return {}
 
     def _resolve_symbol(self, symbol: str) -> str:
         """Übersetzt MT5-Symbol zu yfinance-Ticker, falls nötig."""

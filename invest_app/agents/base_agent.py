@@ -18,8 +18,9 @@ class BaseAgent(ABC):
     Alle Agenten erben von dieser Klasse und implementieren analyze().
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, db: Optional[Any] = None) -> None:
         self.name = name
+        self.db = db
         self.logger = get_logger(f"agents.{name}")
         self._last_result: Optional[dict] = None
         self._call_count: int = 0
@@ -73,6 +74,19 @@ class BaseAgent(ABC):
         self._last_result = result
         self._call_count += 1
         self._total_duration_ms += duration_ms
+
+        if self.db is not None:
+            try:
+                had_error = not result.get("success", True)
+                self.db.log_agent(
+                    agent_name=self.__class__.__name__,
+                    symbol=data.get("symbol", data.get("instrument", "unknown")),
+                    duration_ms=round(duration_ms, 1),
+                    success=not had_error,
+                    output_summary=str(result)[:500] if result else "None",
+                )
+            except Exception as log_err:
+                self.logger.warning(f"[{self.name}] DB-Logging fehlgeschlagen: {log_err}")
 
         self.logger.debug(
             f"[{self.name}] Analyse abgeschlossen | "

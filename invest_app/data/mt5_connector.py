@@ -5,7 +5,10 @@ Läuft nur auf Windows mit installiertem MT5-Terminal.
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -179,6 +182,18 @@ class MT5Connector:
         }
 
         result = mt5.order_send(request)
+        if result is not None and result.retcode == 10027:  # AutoTrading disabled
+            logger.warning("[Order] AutoTrading deaktiviert → Fallback auf Datei-Protokoll")
+            signal_dict = {
+                "symbol": signal.instrument,
+                "direction": "buy" if str(signal.direction) == "long" else "sell",
+                "volume": float(signal.lot_size),
+                "sl": float(signal.stop_loss),
+                "tp": float(signal.take_profit),
+            }
+            self.write_order_file(signal_dict)
+            return self.read_order_result()
+
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             retcode = result.retcode if result else "None"
             comment = result.comment if result else ""
@@ -191,8 +206,57 @@ class MT5Connector:
         )
         return result.order
 
-    def close_position(self, ticket: int) -> bool:
-        """Schließt eine offene Position anhand des Tickets."""
+    def write_order_file(self, signal: dict) -> bool:
+        """Schreibt Order in pending_order.json für MQL5 EA."""
+        from config import config as app_config
+        order = {
+            "timestamp": time.time(),
+            "symbol": signal.get("symbol"),
+            "direction": signal.get("direction"),
+            "volume": signal.get("volume", 0.01),
+            "sl": signal.get("sl"),
+            "tp": signal.get("tp"),
+            "comment": "InvestApp",
+            "status": "pending",
+        }
+        common_path = getattr(app_config, "mt5_common_files_path", "")
+        if common_path:
+            path = Path(common_path) / "pending_order.json"
+        else:
+            path = Path(app_config.output_dir) / "pending_order.json"
+        with open(path, "w") as f:
+            json.dump(order, f, indent=2)
+        logger.info(
+            f"[Order] Datei geschrieben: {signal.get('symbol')} {signal.get('direction')} "
+            f"@ SL={signal.get('sl')}"
+        )
+        return True
+
+    def read_order_result(self, timeout_seconds: int = 10) -> dict:
+        """Wartet auf Ergebnis vom EA (pending_order.json status != pending)."""
+        from config import config as app_config
+        common_path = getattr(app_config, "mt5_common_files_path", "")
+        if common_path:
+            path = Path(common_path) / "pending_order.json"
+        else:
+            path = Path(app_config.output_dir) / "pending_order.json"
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                if data.get("status") != "pending":
+                    return data
+            except Exception:
+                pass
+            time.sleep(0.2)
+        return {"status": "timeout", "error": "EA hat nicht geantwortet"}
+
+    def close_position(self, ticket: int, lot_size: Optional[float] = None) -> bool:
+        """
+        Schließt eine offene Position anhand des Tickets.
+        lot_size: Wenn angegeben, wird nur dieser Anteil geschlossen (Partial Close).
+        """
         self._require_connection()
 
         position = mt5.positions_get(ticket=ticket)
@@ -201,6 +265,7 @@ class MT5Connector:
             return False
 
         pos = position[0]
+        volume = lot_size if lot_size is not None else pos.volume
         close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
         price = mt5.symbol_info_tick(pos.symbol)
         close_price = price.bid if close_type == mt5.ORDER_TYPE_SELL else price.ask
@@ -208,7 +273,7 @@ class MT5Connector:
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": pos.symbol,
-            "volume": pos.volume,
+            "volume": float(volume),
             "type": close_type,
             "position": ticket,
             "price": close_price,
@@ -224,7 +289,169 @@ class MT5Connector:
             logger.error(f"Schließen von {ticket} fehlgeschlagen: {result}")
             return False
 
-        logger.info(f"Position {ticket} geschlossen.")
+        logger.info(f"Position {ticket} geschlossen (Lot: {volume}).")
+        return True
+
+    def modify_position(self, ticket: int, new_sl: float, new_tp: Optional[float] = None) -> bool:
+        """Ändert SL (und optional TP) einer offenen Position via TRADE_ACTION_SLTP."""
+        self._require_connection()
+
+        position = mt5.positions_get(ticket=ticket)
+        if not position:
+            logger.warning(f"modify_position: Position {ticket} nicht gefunden.")
+            return False
+
+        pos = position[0]
+        tp = new_tp if new_tp is not None else pos.tp
+
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "sl": float(new_sl),
+            "tp": float(tp),
+        }
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            logger.error(f"modify_position {ticket} fehlgeschlagen: {result}")
+            return False
+
+        logger.info(f"Position {ticket}: SL → {new_sl}, TP → {tp}")
+        return True
+
+    def get_news(self, hours_back: int = 4) -> list[dict]:
+        """Ruft Nachrichten aus MetaTrader 5 ab."""
+        if not MT5_AVAILABLE or not self._connected:
+            return []
+        try:
+            from datetime import timedelta
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(hours=hours_back)
+            news = mt5.news_get(date_from, date_to)
+            if news is None:
+                return []
+            result = []
+            for item in news:
+                result.append({
+                    "timestamp": item.time,
+                    "keyword": item.subject if hasattr(item, "subject") else "",
+                    "topic": item.category if hasattr(item, "category") else "",
+                    "body": item.body if hasattr(item, "body") else "",
+                    "source": "metatrader5",
+                })
+            return result
+        except Exception as e:
+            self.logger.error(f"MT5 News Fehler: {e}")
+            return []
+
+    def place_market_order(
+        self,
+        symbol: str,
+        direction: str,
+        lot_size: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Optional[int]:
+        """Platziert eine Market-Order mit Rohparametern (ohne Signal-Objekt)."""
+        self._require_connection()
+
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            logger.error(f"Symbol {symbol} nicht gefunden.")
+            return None
+
+        order_type = mt5.ORDER_TYPE_BUY if direction == "long" else mt5.ORDER_TYPE_SELL
+        tick = mt5.symbol_info_tick(symbol)
+        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+
+        request: dict = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(lot_size),
+            "type": order_type,
+            "price": price,
+            "deviation": 10,
+            "magic": 123456,
+            "comment": "InvestApp-Watch",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        if stop_loss is not None:
+            request["sl"] = float(stop_loss)
+        if take_profit is not None:
+            request["tp"] = float(take_profit)
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            retcode = result.retcode if result else "None"
+            comment = result.comment if result else ""
+            logger.error(f"Market-Order fehlgeschlagen: retcode={retcode} | {comment}")
+            return None
+
+        logger.info(f"Market-Order ausgeführt: {symbol} {direction} | Ticket: {result.order}")
+        return result.order
+
+    def modify_position(self, ticket: int, new_sl: float) -> bool:
+        """Ändert den Stop-Loss einer offenen Position."""
+        self._require_connection()
+
+        position = mt5.positions_get(ticket=ticket)
+        if not position:
+            logger.warning(f"Position {ticket} für SL-Änderung nicht gefunden.")
+            return False
+
+        pos = position[0]
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "sl": float(new_sl),
+            "tp": float(pos.tp),
+            "position": ticket,
+        }
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            logger.error(f"SL-Änderung für {ticket} fehlgeschlagen: {result}")
+            return False
+
+        logger.debug(f"SL für Ticket {ticket} → {new_sl:.5f}")
+        return True
+
+    def close_partial_position(self, ticket: int, lot_size: float) -> bool:
+        """Schließt einen Teil einer offenen Position."""
+        self._require_connection()
+
+        position = mt5.positions_get(ticket=ticket)
+        if not position:
+            logger.warning(f"Position {ticket} nicht gefunden.")
+            return False
+
+        pos = position[0]
+        close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+        tick = mt5.symbol_info_tick(pos.symbol)
+        close_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": float(lot_size),
+            "type": close_type,
+            "position": ticket,
+            "price": close_price,
+            "deviation": 10,
+            "magic": 123456,
+            "comment": "InvestApp Partial Close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            logger.error(f"Partial Close für {ticket} fehlgeschlagen: {result}")
+            return False
+
+        logger.info(f"Partial Close {ticket}: {lot_size} Lots geschlossen.")
         return True
 
     def get_open_positions(self) -> list[dict]:
@@ -247,6 +474,71 @@ class MT5Connector:
             }
             for p in positions
         ]
+
+    def get_symbols_from_file(self, output_dir: str = "Output") -> list[str]:
+        """
+        Liest Symbole aus der von MQL5 EA exportierten available_symbols.json.
+        Fallback auf mt5.symbols_get() wenn Datei nicht vorhanden.
+        """
+        import json
+        import time
+        from pathlib import Path
+
+        cfg = getattr(self, "config", None)
+        common_path = getattr(cfg, "mt5_common_files_path", "") if cfg else ""
+        out_dir = str(getattr(cfg, "output_dir", output_dir)) if cfg else output_dir
+
+        search_paths = []
+        if common_path:
+            search_paths.append(Path(common_path) / "available_symbols.json")
+        search_paths.append(Path(out_dir) / "available_symbols.json")
+
+        for path in search_paths:
+            if not path.exists():
+                continue
+
+            age_minutes = (time.time() - path.stat().st_mtime) / 60
+            if age_minutes > 5:
+                logger.warning(
+                    f"[Symbols] available_symbols.json ist {age_minutes:.0f} Min alt "
+                    f"— EA läuft möglicherweise nicht"
+                )
+
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+
+                symbols = [s["name"] for s in data.get("symbols", []) if s.get("name")]
+                logger.info(
+                    f"[Symbols] {len(symbols)} Symbole aus EA-Export geladen "
+                    f"(Datei: {path.name}, Alter: {age_minutes:.1f} Min)"
+                )
+                return symbols
+            except Exception as e:
+                logger.warning(f"[Symbols] Fehler beim Lesen von {path}: {e}")
+
+        logger.info("[Symbols] EA-Export nicht gefunden → Fallback auf mt5.symbols_get()")
+        return self.get_symbols()
+
+    def get_symbols(self) -> list[str]:
+        """Gibt alle sichtbaren Symbole des Brokers zurück."""
+        try:
+            symbols = mt5.symbols_get()
+            if symbols:
+                return [s.name for s in symbols if s.visible]
+            return []
+        except Exception:
+            return []
+
+    def get_tick(self, symbol: str) -> dict:
+        """Gibt aktuellen Bid/Ask-Tick für ein Symbol zurück."""
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick:
+                return {"bid": tick.bid, "ask": tick.ask}
+            return {}
+        except Exception:
+            return {}
 
     def _require_connection(self) -> None:
         if not self._connected:

@@ -85,6 +85,28 @@ class TestDatabase:
         stats = db.get_performance_stats(days=7)
         assert isinstance(stats, dict)
 
+    def test_save_signal_with_bool_in_agent_scores(self, db):
+        """Regression: bool-Werte in agent_scores dürfen keinen TypeError auslösen."""
+        signal = Signal(
+            instrument="EURUSD",
+            direction=Direction.LONG,
+            entry_price=1.09,
+            stop_loss=1.085,
+            take_profit=1.10,
+            crv=2.0,
+            confidence_score=85.0,
+            status=SignalStatus.APPROVED,
+            agent_scores={
+                "trend": {"hh_hl": True, "direction": "long", "valid": False},
+                "macro": {"trading_allowed": True, "event_risk": "low"},
+            },
+        )
+        db.save_signal(signal)
+        signals = db.get_recent_signals(hours=24)
+        found = next((s for s in signals if s["instrument"] == "EURUSD"), None)
+        assert found is not None
+        assert found["agent_scores"]["trend"]["hh_hl"] is True
+
     def test_multiple_signals_saved(self, db):
         for i, instrument in enumerate(["AAPL", "MSFT", "GOOGL"]):
             signal = Signal(

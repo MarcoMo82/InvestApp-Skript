@@ -65,14 +65,29 @@ class EntryAgent(BaseAgent):
 
             breakout = self._check_breakout(df, direction, level_price, tolerance)
             if breakout["found"]:
+                # Handbuch: Breakout nur gültig wenn Volumen > 150% des 20P-Durchschnitts
+                confidence = 1.0
+                reasons: list[str] = []
+                if "volume" in df.columns and len(df) >= 20:
+                    vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
+                    current_vol = float(df["volume"].iloc[-1])
+                    if vol_avg_20 > 0 and current_vol < vol_avg_20 * 1.5:
+                        confidence *= 0.6
+                        reasons.append("Breakout ohne Volumenbestätigung")
+
+                description = breakout["description"]
+                if reasons:
+                    description += f" | Hinweis: {', '.join(reasons)}"
+
                 return {
                     "symbol": symbol,
                     "entry_found": True,
                     "entry_type": "breakout",
                     "entry_price": breakout["entry_price"],
                     "trigger_condition": breakout["trigger"],
-                    "setup_description": breakout["description"],
+                    "setup_description": description,
                     "candle_pattern": pattern,
+                    "confidence_modifier": round(confidence, 2),
                 }
 
             rejection = self._check_rejection(df, direction, level_price, tolerance)

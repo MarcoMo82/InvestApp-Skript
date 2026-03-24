@@ -75,6 +75,31 @@ class LevelAgent(BaseAgent):
                 "fvg_low": fvg["low"],
             })
 
+        # ATR für Order Blocks und Scoring
+        atr = data.get("atr", self._estimate_atr(df))
+
+        # Order Blocks
+        order_blocks = self._find_order_blocks(df.iloc[-100:], atr)
+        for ob in order_blocks:
+            key_levels.append({
+                "price": (ob["high"] + ob["low"]) / 2,
+                "type": "order_block",
+                "ob_type": ob["type"],
+                "ob_high": ob["high"],
+                "ob_low": ob["low"],
+                "strength": 8,
+            })
+
+        # Psychologische Preislevels
+        psych_levels = self._find_psychological_levels(current_price, atr)
+        for pl in psych_levels:
+            key_levels.append({
+                "price": pl["price"],
+                "type": "psychological",
+                "strength": 8 if pl["strength"] == "strong" else 5,
+                "psych_strength": pl["strength"],
+            })
+
         # Duplikate entfernen (Level innerhalb 0.05% zusammenführen)
         key_levels = self._deduplicate_levels(key_levels, current_price)
 
@@ -90,6 +115,12 @@ class LevelAgent(BaseAgent):
             nearest, distance_pct, key_levels
         )
 
+        # OB-Nähe: Level-Score-Bonus prüfen
+        ob_proximity_bonus = self._check_ob_proximity(order_blocks, current_price, atr)
+
+        # level_score (0–100) aus reaction_score (1–10) + Bonuspunkte
+        level_score = min(100, reaction_score * 10 + ob_proximity_bonus)
+
         # Level nach Preis sortieren
         key_levels_sorted = sorted(key_levels, key=lambda x: x["price"])
 
@@ -99,7 +130,10 @@ class LevelAgent(BaseAgent):
             "nearest_level": nearest,
             "distance_pct": round(distance_pct * 100, 3),
             "reaction_score": reaction_score,
+            "level_score": level_score,
             "fvgs": fvgs,
+            "order_blocks": order_blocks,
+            "psychological_levels": psych_levels,
             "daily_high": daily_high,
             "daily_low": daily_low,
             "current_price": current_price,
@@ -224,6 +258,102 @@ class LevelAgent(BaseAgent):
 
         return max(1, min(10, score))
 
+    def _find_order_blocks(self, ohlcv: pd.DataFrame, atr: float) -> list[dict]:
+        """
+        Findet Order Blocks: letzte Gegenrichtungskerze vor einem starken Impuls.
+        Starker Impuls = Body > ATR × 1.5 in Trendrichtung.
+        """
+        order_blocks = []
+        closes = ohlcv["close"].values
+        opens = ohlcv["open"].values
+        highs = ohlcv["high"].values
+        lows = ohlcv["low"].values
+
+        for i in range(1, len(ohlcv) - 1):
+            body_size = abs(closes[i] - opens[i])
+            if body_size < atr * 1.5:
+                continue
+
+            # Starker Aufwärts-Impuls nach bearischer Kerze → bullischer OB
+            if closes[i] > opens[i] and closes[i - 1] < opens[i - 1]:
+                ob = {
+                    "type": "bullish",
+                    "high": float(highs[i - 1]),
+                    "low": float(lows[i - 1]),
+                    "index": int(i - 1),
+                    "consumed": float(closes[-1]) < float(lows[i - 1]),
+                }
+                order_blocks.append(ob)
+
+            # Starker Abwärts-Impuls nach bullischer Kerze → bearischer OB
+            elif closes[i] < opens[i] and closes[i - 1] > opens[i - 1]:
+                ob = {
+                    "type": "bearish",
+                    "high": float(highs[i - 1]),
+                    "low": float(lows[i - 1]),
+                    "index": int(i - 1),
+                    "consumed": float(closes[-1]) > float(highs[i - 1]),
+                }
+                order_blocks.append(ob)
+
+        # Nur nicht-konsumierte OBs, neueste zuerst
+        return [ob for ob in reversed(order_blocks) if not ob["consumed"]]
+
+    @staticmethod
+    def _check_ob_proximity(order_blocks: list[dict], current_price: float, atr: float) -> int:
+        """Gibt +15 zurück wenn Preis < 1 ATR von einem OB entfernt ist."""
+        for ob in order_blocks:
+            ob_mid = (ob["high"] + ob["low"]) / 2
+            if abs(current_price - ob_mid) < atr:
+                return 15
+        return 0
+
+    @staticmethod
+    def _find_psychological_levels(current_price: float, atr: float) -> list[dict]:
+        """Findet psychologische Preislevels (runde Zahlen) in der Nähe des Preises."""
+        levels = []
+
+        if current_price > 1000:
+            increments = [100, 500, 1000]
+        elif current_price > 100:
+            increments = [10, 50, 100]
+        elif current_price > 10:
+            increments = [1, 5, 10]
+        elif current_price > 1:
+            increments = [0.1, 0.5, 1.0]
+        else:
+            increments = [0.01, 0.05, 0.1]
+
+        seen: set[float] = set()
+        for inc in increments:
+            base = round(current_price / inc) * inc
+            for multiplier in range(-3, 4):
+                level_price = round(base + multiplier * inc, 5)
+                distance = abs(current_price - level_price)
+                if distance < atr * 3 and level_price not in seen:
+                    seen.add(level_price)
+                    levels.append({
+                        "type": "psychological",
+                        "price": level_price,
+                        "distance": round(distance, 6),
+                        "strength": "strong" if distance < atr else "moderate",
+                    })
+
+        return sorted(levels, key=lambda x: x["distance"])
+
+    @staticmethod
+    def _estimate_atr(df: pd.DataFrame, period: int = 14) -> float:
+        """Schätzt ATR wenn kein externer Wert geliefert wird."""
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
+
     @staticmethod
     def _default_result(symbol: str) -> dict:
         return {
@@ -232,7 +362,10 @@ class LevelAgent(BaseAgent):
             "nearest_level": None,
             "distance_pct": 0.0,
             "reaction_score": 0,
+            "level_score": 0,
             "fvgs": [],
+            "order_blocks": [],
+            "psychological_levels": [],
             "daily_high": 0.0,
             "daily_low": 0.0,
             "current_price": 0.0,

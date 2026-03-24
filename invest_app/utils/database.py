@@ -19,6 +19,29 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _json_default(obj):
+    """Fallback-Serializer für json.dumps."""
+    if isinstance(obj, bool):
+        return obj  # bool vor int prüfen!
+    if isinstance(obj, (int, float)):
+        return obj
+    if hasattr(obj, "item"):  # numpy scalar
+        return obj.item()
+    if hasattr(obj, "tolist"):  # numpy array
+        return obj.tolist()
+    return str(obj)
+
+
+def _make_json_safe(obj):
+    """Normalisiert Python-Objekte für JSON-Serialisierung (bool, numpy, etc.)"""
+    if obj is None:
+        return None
+    try:
+        return json.loads(json.dumps(obj, default=_json_default))
+    except Exception:
+        return str(obj)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -126,9 +149,9 @@ class Database:
             confidence_score=data.get("confidence_score", 0.0),
             status=str(data.get("status", "pending")),
             reasoning=data.get("reasoning", ""),
-            pros=data.get("pros", []),
-            cons=data.get("cons", []),
-            agent_scores=data.get("agent_scores", {}),
+            pros=_make_json_safe(data.get("pros", [])),
+            cons=_make_json_safe(data.get("cons", [])),
+            agent_scores=_make_json_safe(data.get("agent_scores", {})),
         )
         with self._session() as session:
             session.merge(record)
@@ -153,12 +176,15 @@ class Database:
     def save_trade(self, trade: Any) -> None:
         """Speichert ein Trade-Objekt (Trade-Pydantic-Modell oder dict)."""
         data = trade.model_dump() if hasattr(trade, "model_dump") else trade
+        def _str(val) -> str:
+            return val.value if hasattr(val, "value") else str(val)
+
         record = TradeRecord(
             id=data["id"],
             signal_id=data["signal_id"],
             mt5_ticket=data.get("mt5_ticket"),
             instrument=data["instrument"],
-            direction=data["direction"],
+            direction=_str(data["direction"]),
             entry_price=data.get("entry_price", 0.0),
             sl=data.get("sl", 0.0),
             tp=data.get("tp", 0.0),
@@ -168,7 +194,7 @@ class Database:
             close_price=data.get("close_price"),
             pnl=data.get("pnl"),
             pnl_pips=data.get("pnl_pips"),
-            status=str(data.get("status", "open")),
+            status=_str(data.get("status", "open")),
             comment=data.get("comment", "InvestApp"),
         )
         with self._session() as session:
@@ -180,10 +206,30 @@ class Database:
         with self._session() as session:
             records = (
                 session.query(TradeRecord)
-                .filter(TradeRecord.status == "open")
+                .filter(TradeRecord.status.in_(["open", "partial_exit"]))
                 .all()
             )
         return [self._trade_to_dict(r) for r in records]
+
+    def update_trade_sl(self, trade_id: str, new_sl: float) -> None:
+        """Aktualisiert den Stop-Loss eines offenen Trades."""
+        with self._session() as session:
+            session.execute(
+                text("UPDATE trades SET sl = :sl WHERE id = :id"),
+                {"sl": new_sl, "id": trade_id},
+            )
+            session.commit()
+        logger.debug(f"Trade {trade_id}: SL → {new_sl}")
+
+    def update_trade_status(self, trade_id: str, status: str) -> None:
+        """Aktualisiert den Status eines Trades."""
+        with self._session() as session:
+            session.execute(
+                text("UPDATE trades SET status = :status WHERE id = :id"),
+                {"status": status, "id": trade_id},
+            )
+            session.commit()
+        logger.debug(f"Trade {trade_id}: Status → {status}")
 
     def get_closed_trades(self, days: int = 30) -> list[dict]:
         """Gibt geschlossene Trades der letzten N Tage zurück."""
@@ -197,6 +243,48 @@ class Database:
                 .all()
             )
         return [self._trade_to_dict(r) for r in records]
+
+    def update_trade_sl(self, trade_id: str, new_sl: float) -> None:
+        """Aktualisiert den Stop-Loss eines offenen Trades."""
+        with self._session() as session:
+            record = session.query(TradeRecord).filter(TradeRecord.id == trade_id).first()
+            if record is not None:
+                record.sl = new_sl
+                session.commit()
+                logger.debug(f"Trade {trade_id}: SL aktualisiert auf {new_sl}")
+
+    def update_trade_status(self, trade_id: str, status: str) -> None:
+        """Aktualisiert den Status eines Trades."""
+        with self._session() as session:
+            record = session.query(TradeRecord).filter(TradeRecord.id == trade_id).first()
+            if record is not None:
+                record.status = status
+                session.commit()
+                logger.debug(f"Trade {trade_id}: Status → {status}")
+
+    def update_trade_close(
+        self,
+        ticket: int,
+        close_price: float,
+        pnl: float,
+        close_time: datetime,
+    ) -> None:
+        """Schließt einen Trade in der DB (setzt close_price, pnl, close_time, status='closed')."""
+        with self._session() as session:
+            record = (
+                session.query(TradeRecord)
+                .filter(TradeRecord.mt5_ticket == ticket)
+                .first()
+            )
+            if record:
+                record.close_price = close_price
+                record.pnl = round(pnl, 2)
+                record.close_time = close_time
+                record.status = "closed"
+                session.commit()
+                logger.debug(f"Trade geschlossen: Ticket={ticket} | PnL={pnl:.2f}")
+            else:
+                logger.warning(f"Trade mit Ticket {ticket} nicht in DB gefunden.")
 
     def get_daily_pnl(self) -> float:
         """Gibt den heutigen kumulierten PnL zurück."""
@@ -216,25 +304,66 @@ class Database:
     def log_agent(
         self,
         agent_name: str,
-        instrument: str,
-        input_data: dict,
-        output_data: dict,
+        symbol: str,
         duration_ms: float = 0.0,
-        error: Optional[str] = None,
+        success: bool = True,
+        output_summary: str = "",
     ) -> None:
+        """Schreibt einen Agent-Lauf in die agent_logs-Tabelle."""
         record = AgentLogRecord(
             agent_name=agent_name,
-            instrument=instrument,
-            input_data=input_data,
-            output_data=output_data,
+            instrument=symbol,
+            input_data=None,
+            output_data=_make_json_safe({"summary": output_summary, "success": success}),
             duration_ms=duration_ms,
-            error=error,
+            error=None if success else output_summary,
         )
         with self._session() as session:
             session.add(record)
             session.commit()
 
     # --- Performance ---
+
+    def update_performance(self) -> None:
+        """Berechnet aktuelle Performance und speichert einen neuen Eintrag in der performance-Tabelle."""
+        with self._session() as session:
+            trades = (
+                session.query(TradeRecord)
+                .filter(TradeRecord.status == "closed")
+                .all()
+            )
+
+        total = len(trades)
+        if total == 0:
+            record = PerformanceRecord(
+                date=datetime.utcnow(),
+                total_trades=0,
+                winning_trades=0,
+                losing_trades=0,
+                total_pnl=0.0,
+                win_rate=0.0,
+                avg_crv=0.0,
+                daily_pnl=self.get_daily_pnl(),
+            )
+        else:
+            winners = [t for t in trades if t.pnl is not None and t.pnl > 0]
+            total_pnl = sum(t.pnl for t in trades if t.pnl is not None)
+            record = PerformanceRecord(
+                date=datetime.utcnow(),
+                total_trades=total,
+                winning_trades=len(winners),
+                losing_trades=total - len(winners),
+                total_pnl=round(total_pnl, 2),
+                win_rate=round(len(winners) / total * 100, 1),
+                avg_crv=0.0,
+                daily_pnl=self.get_daily_pnl(),
+            )
+
+        win_rate = record.win_rate
+        with self._session() as session:
+            session.add(record)
+            session.commit()
+        logger.debug(f"Performance aktualisiert: {total} Trades | Win-Rate: {win_rate}%")
 
     def get_performance_stats(self, days: int = 30) -> dict:
         """Berechnet Performance-Kennzahlen der letzten N Tage."""

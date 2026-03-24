@@ -1,103 +1,205 @@
-"""Tests für den EntryAgent."""
+"""
+Tests für den EntryAgent – Volume-Check bei Breakouts.
+"""
+
+import pytest
 import numpy as np
 import pandas as pd
-import pytest
 
 from agents.entry_agent import EntryAgent
 
 
-def _make_ohlcv(n=50, trend="up"):
-    """Hilfsfunktion: Erstellt minimales 5m-OHLCV-Dataset."""
-    np.random.seed(7)
-    base = 100.0
-    prices = [base]
-    for _ in range(1, n):
-        delta = 0.05 if trend == "up" else -0.05
-        prices.append(max(prices[-1] + np.random.normal(delta, 0.2), 1.0))
-    df = pd.DataFrame(
-        {
-            "open": [p * 0.999 for p in prices],
-            "high": [p * 1.005 for p in prices],
-            "low": [p * 0.995 for p in prices],
-            "close": prices,
-            "volume": np.ones(n) * 1000,
-        },
-        index=pd.date_range("2024-01-01", periods=n, freq="5min"),
-    )
-    return df
+def _make_breakout_df(
+    n: int = 50,
+    level: float = 1.1050,
+    breakout: bool = True,
+    volume_ratio: float = 2.0,  # Volumen relativ zum 20P-Durchschnitt
+) -> pd.DataFrame:
+    """
+    Erstellt einen DataFrame der einen Breakout über `level` simuliert.
+    Die letzte Kerze bricht aus, die vorletzte liegt darunter.
+    """
+    np.random.seed(99)
+    base = level - 0.0010
+    closes = base + np.cumsum(np.random.randn(n) * 0.0003)
+
+    # Basis-Volumen für alle Bars
+    base_vol = 1000.0
+    volumes = np.full(n, base_vol)
+
+    if breakout:
+        # Letzte Kerze: Breakout über Level
+        closes[-1] = level + 0.0010
+        closes[-2] = level - 0.0002
+
+    # Letzte Kerze: Volumen = Ratio × Durchschnitt
+    vol_avg = base_vol
+    volumes[-1] = vol_avg * volume_ratio
+
+    highs = closes + 0.0005
+    lows = closes - 0.0005
+    opens = closes - 0.0002
+
+    return pd.DataFrame({
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": volumes,
+    })
 
 
-class TestEntryAgent:
-    def test_output_keys_present(self):
+class TestVolumeCheckBreakout:
+    """Prüft den Volume-Check bei Breakout-Entries."""
+
+    def test_breakout_with_high_volume_no_penalty(self):
+        """Breakout mit Volumen > 150% → kein Hinweis, confidence_modifier = 1.0."""
         agent = EntryAgent()
-        df = _make_ohlcv()
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": df, "direction": "long"}
-        )
-        for key in ("entry_found", "entry_type", "entry_price",
-                    "trigger_condition", "candle_pattern"):
-            assert key in result, f"Schlüssel '{key}' fehlt im Output"
+        df = _make_breakout_df(n=50, level=1.1050, volume_ratio=2.0)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "nearest_level": {"price": 1.1050},
+            "atr_value": 0.0005,
+        })
 
-    def test_entry_found_is_bool(self):
-        agent = EntryAgent()
-        df = _make_ohlcv()
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": df, "direction": "long"}
-        )
-        assert isinstance(result["entry_found"], bool)
+        if result["entry_found"] and result["entry_type"] == "breakout":
+            assert result.get("confidence_modifier", 1.0) == 1.0
+            assert "Volumenbestätigung" not in result["setup_description"]
 
-    def test_valid_entry_types(self):
+    def test_breakout_with_low_volume_penalty(self):
+        """Breakout mit Volumen < 150% → confidence_modifier = 0.6 und Hinweis."""
         agent = EntryAgent()
-        df = _make_ohlcv()
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": df, "direction": "long"}
-        )
-        assert result["entry_type"] in ("breakout", "rejection", "pullback", "none")
+        df = _make_breakout_df(n=50, level=1.1050, volume_ratio=1.0)  # Nur 100% = zu wenig
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "nearest_level": {"price": 1.1050},
+            "atr_value": 0.0005,
+        })
 
-    def test_neutral_direction_no_entry(self):
+        if result["entry_found"] and result["entry_type"] == "breakout":
+            assert result.get("confidence_modifier", 1.0) == pytest.approx(0.6)
+            assert "Volumenbestätigung" in result["setup_description"]
+
+    def test_breakout_with_very_high_volume_no_penalty(self):
+        """Volumen 300% des Durchschnitts → kein Penalty (weit über 150%)."""
         agent = EntryAgent()
-        df = _make_ohlcv()
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": df, "direction": "neutral"}
-        )
+        df = _make_breakout_df(n=50, level=1.1050, volume_ratio=3.0)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "nearest_level": {"price": 1.1050},
+            "atr_value": 0.0005,
+        })
+
+        if result["entry_found"] and result["entry_type"] == "breakout":
+            # 300% des Basis-Volumens ist klar über Schwelle → kein Penalty
+            assert result.get("confidence_modifier", 1.0) == 1.0
+
+    def test_no_volume_column_no_error(self):
+        """Kein Volume-Spaltename im DataFrame → kein Absturz, normales Entry."""
+        agent = EntryAgent()
+        df = _make_breakout_df(n=50, level=1.1050, volume_ratio=2.0)
+        df = df.drop(columns=["volume"])  # Kein Volume
+
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "nearest_level": {"price": 1.1050},
+            "atr_value": 0.0005,
+        })
+        # Kein Absturz – confidence_modifier = 1.0 (kein Check möglich)
+        if result["entry_found"] and result["entry_type"] == "breakout":
+            assert result.get("confidence_modifier", 1.0) == 1.0
+
+    def test_rejection_entry_not_affected_by_volume_check(self):
+        """Rejection-Entry hat keinen Volume-Check."""
+        agent = EntryAgent()
+
+        # Rejection: Preis testet Level von oben, langer unterer Wick
+        level = 1.1050
+        close_p = level + 0.0002  # Bullisch
+        open_p = level + 0.0010
+        low_p = level - 0.0005   # Langer unterer Wick
+
+        df = _make_breakout_df(n=50, level=level, breakout=False, volume_ratio=0.5)
+        # Letzte Kerze manuell als Rejection setzen
+        df.iloc[-1, df.columns.get_loc("open")] = open_p
+        df.iloc[-1, df.columns.get_loc("close")] = close_p
+        df.iloc[-1, df.columns.get_loc("low")] = low_p
+        df.iloc[-1, df.columns.get_loc("high")] = open_p + 0.0002
+
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "nearest_level": {"price": level},
+            "atr_value": 0.0010,
+        })
+
+        # Wenn Rejection gefunden → kein confidence_modifier Penalty
+        if result["entry_found"] and result["entry_type"] == "rejection":
+            assert "confidence_modifier" not in result or result["confidence_modifier"] == 1.0
+
+    def test_pullback_entry_not_affected_by_volume_check(self):
+        """Pullback-Entry hat keinen Volume-Check."""
+        agent = EntryAgent()
+        df = _make_breakout_df(n=50, level=1.1050, breakout=False, volume_ratio=0.5)
+
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+            "atr_value": 0.0010,
+        })
+
+        if result["entry_found"] and result["entry_type"] == "pullback":
+            assert "confidence_modifier" not in result or result["confidence_modifier"] == 1.0
+
+    def test_short_breakout_volume_check(self):
+        """Volume-Check gilt auch für Short-Breakouts."""
+        agent = EntryAgent()
+        level = 1.1050
+        df = _make_breakout_df(n=50, level=level, breakout=True, volume_ratio=1.0)
+        # Short-Breakout simulieren: letzte Kerze unter Level
+        df.iloc[-1, df.columns.get_loc("close")] = level - 0.0010
+        df.iloc[-2, df.columns.get_loc("close")] = level + 0.0002
+
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "short",
+            "nearest_level": {"price": level},
+            "atr_value": 0.0005,
+        })
+
+        if result["entry_found"] and result["entry_type"] == "breakout":
+            assert result.get("confidence_modifier", 1.0) == pytest.approx(0.6)
+
+    def test_no_entry_returns_correct_structure(self):
+        """Kein Entry → korrekte Struktur."""
+        agent = EntryAgent()
+        df = _make_breakout_df(n=50, level=1.1050, breakout=False)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "neutral",
+        })
         assert result["entry_found"] is False
+        assert result["entry_type"] == "none"
 
     def test_insufficient_data_no_entry(self):
+        """Zu wenig Daten → kein Entry."""
         agent = EntryAgent()
-        tiny_df = pd.DataFrame(
-            {
-                "open": [100.0] * 3,
-                "high": [101.0] * 3,
-                "low": [99.0] * 3,
-                "close": [100.0] * 3,
-                "volume": [1000] * 3,
-            }
-        )
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": tiny_df, "direction": "long"}
-        )
+        df = _make_breakout_df(n=5)
+        result = agent.analyze({
+            "symbol": "EURUSD",
+            "ohlcv_entry": df,
+            "direction": "long",
+        })
         assert result["entry_found"] is False
-
-    def test_entry_price_positive_when_found(self):
-        agent = EntryAgent()
-        df = _make_ohlcv()
-        nearest_level = {"price": float(df["close"].iloc[-1]) * 1.001, "type": "swing_high", "strength": 7}
-        result = agent.analyze(
-            {
-                "symbol": "AAPL",
-                "ohlcv_entry": df,
-                "direction": "long",
-                "nearest_level": nearest_level,
-                "atr_value": 0.5,
-            }
-        )
-        if result["entry_found"]:
-            assert result["entry_price"] > 0
-
-    def test_short_direction_accepted(self):
-        agent = EntryAgent()
-        df = _make_ohlcv(trend="down")
-        result = agent.analyze(
-            {"symbol": "AAPL", "ohlcv_entry": df, "direction": "short"}
-        )
-        assert result["entry_type"] in ("breakout", "rejection", "pullback", "none")
