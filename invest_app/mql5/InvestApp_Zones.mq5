@@ -12,7 +12,7 @@
 #property indicator_plots 0
 
 //--- Eingabe-Parameter
-input string   JsonFilePath              = "";         // Voller Pfad zur mt5_zones.json
+input string   InpZonesFile              = "mt5_zones.json";  // Dateiname (nur Name, kein Pfad – FILE_COMMON)
 input color    InpColorEntryLong         = C'0,128,255';  // Entry-Zone Long
 input color    InpColorEntryShort        = clrRed;        // Entry-Zone Short
 input color    InpColorSL               = clrRed;        // Stop Loss
@@ -32,20 +32,17 @@ input int      InpTimerSeconds          = 60;            // Aktualisierungsinter
 #define IA_PREFIX "IA_"
 
 //--- Globale Zustandsvariablen
-string g_last_update   = "";
-int    g_active_count  = 0;
-int    g_timer_counter = 0;
+string g_last_update        = "";
+int    g_active_count       = 0;
+int    g_timer_counter      = 0;
+int    g_export_counter     = 0;
+bool   g_file_missing_logged = false;  // Einmalig loggen wenn Datei fehlt
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   if(StringLen(JsonFilePath) == 0)
-   {
-      Alert("InvestApp_Zones: JsonFilePath ist leer!\n"
-            "Bitte den vollen Pfad zur mt5_zones.json in den Indikator-Einstellungen angeben.");
-      return INIT_FAILED;
-   }
    EventSetTimer(1);  // 1s-Takt: Order-Polling + Zone-Update alle InpTimerSeconds
+   ExportAvailableSymbols();
    LoadAndDraw();
    return INIT_SUCCEEDED;
 }
@@ -78,10 +75,16 @@ void OnTimer()
 {
    CheckPendingOrder();
    g_timer_counter++;
+   g_export_counter++;
    if(g_timer_counter >= InpTimerSeconds)
    {
       g_timer_counter = 0;
       LoadAndDraw();
+   }
+   if(g_export_counter >= 60)
+   {
+      g_export_counter = 0;
+      ExportAvailableSymbols();
    }
 }
 
@@ -91,10 +94,11 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void LoadAndDraw()
 {
-   string json = ReadFileContent(JsonFilePath);
+   string json = ReadFileContent(InpZonesFile);
    if(StringLen(json) == 0)
    {
-      Comment("InvestApp Zones\nDatei nicht gefunden:\n" + JsonFilePath);
+      Comment("InvestApp Zones\nDatei nicht gefunden:\n" + InpZonesFile +
+              "\n(erwartet in MT5 Common Files)");
       return;
    }
 
@@ -301,21 +305,58 @@ void DeleteAllIAObjects()
 }
 
 //+------------------------------------------------------------------+
+//|  Verfügbare Symbole nach available_symbols.json exportieren      |
+//|  Format: ["EURUSD","GBPUSD",...]  (einfaches JSON-Array)        |
+//+------------------------------------------------------------------+
+void ExportAvailableSymbols()
+{
+   string filename = "available_symbols.json";
+   int total = SymbolsTotal(true);  // true = nur sichtbare Symbole
+
+   string json = "[";
+   bool first = true;
+   for(int i = 0; i < total; i++)
+   {
+      string sym = SymbolName(i, true);
+      if(StringLen(sym) == 0) continue;
+      if(!first) json += ",";
+      json += "\"" + sym + "\"";
+      first = false;
+   }
+   json += "]";
+
+   int fh = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(fh == INVALID_HANDLE)
+   {
+      Print("ExportAvailableSymbols: Fehler beim Öffnen von ", filename,
+            " (Fehler ", GetLastError(), ")");
+      return;
+   }
+   FileWriteString(fh, json);
+   FileClose(fh);
+   Print("ExportAvailableSymbols: ", total, " Symbole exportiert → ", filename);
+}
+
+//+------------------------------------------------------------------+
 //|  Datei einlesen                                                  |
 //+------------------------------------------------------------------+
-string ReadFileContent(string path)
+string ReadFileContent(string filename)
 {
-   // Versuche zuerst mit FILE_COMMON (gemeinsamer MT5-Datenordner)
-   int handle = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
-   if(handle == INVALID_HANDLE)
-      handle = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI);
+   // Nur Dateiname (kein Pfad) + FILE_COMMON → MT5 Common Files Verzeichnis
+   int handle = FileOpen(filename, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
 
    if(handle == INVALID_HANDLE)
    {
-      Print("InvestApp_Zones: Kann Datei nicht öffnen: ", path,
-            " (Fehler ", GetLastError(), ")");
+      // Datei existiert noch nicht (z.B. beim ersten Start, Fehler 5004) – still ignorieren
+      if(!g_file_missing_logged)
+      {
+         Print("InvestApp_Zones: Warte auf ", filename, " in Common Files ...");
+         g_file_missing_logged = true;
+      }
       return "";
    }
+
+   g_file_missing_logged = false;  // Datei gefunden – beim nächsten Fehlen wieder loggen
 
    string content = "";
    while(!FileIsEnding(handle))

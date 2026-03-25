@@ -8,6 +8,8 @@ die vom MQL5-Indikator InvestApp_Zones.mq5 eingelesen wird.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -124,6 +126,45 @@ class ChartExporter:
 
         logger.debug(f"ChartExporter: Zonen für {symbol} vorbereitet")
 
+    def _get_zones_file_path(self) -> Path:
+        """
+        Gibt den Ziel-Pfad für mt5_zones.json zurück.
+
+        Priorität:
+        1. Wenn mt5_zones_file ein vollständiger Pfad ist → direkt verwenden
+           (ermöglicht Tests mit tmp_path und manuelle Konfiguration)
+        2. mt5_common_files_path aus Config (explizit konfiguriert) → Ordner anlegen
+        3. Windows-Auto-Erkennung via APPDATA → Ordner anlegen falls nötig
+        4. Fallback: Output-Verzeichnis
+        """
+        zones_file = getattr(self.config, "mt5_zones_file", "mt5_zones.json")
+        p = Path(zones_file)
+
+        # Vollständiger Pfad (enthält Verzeichnis-Komponente) → direkt verwenden
+        if p.parent != Path("."):
+            return p
+
+        filename = p.name
+
+        # Explizit konfigurierter Common-Files-Pfad
+        common_path_str = getattr(self.config, "mt5_common_files_path", "") or ""
+        if isinstance(common_path_str, str) and common_path_str:
+            common = Path(common_path_str)
+            common.mkdir(parents=True, exist_ok=True)
+            return common / filename
+
+        # Windows-Auto-Erkennung über APPDATA (legt Ordner an falls nötig)
+        appdata = os.environ.get("APPDATA", "")
+        if appdata and sys.platform == "win32":
+            default = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+            default.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[ChartExporter] Zones-Pfad (auto): {default / filename}")
+            return default / filename
+
+        # Fallback: Output-Verzeichnis (Mac/Linux/Tests)
+        output = Path(getattr(self.config, "output_dir", "Output"))
+        return output / filename
+
     def save(self) -> None:
         """
         Schreibt alle gesammelten Zonen als JSON in die konfigurierte Datei.
@@ -133,9 +174,7 @@ class ChartExporter:
             logger.debug("ChartExporter: Export deaktiviert – keine Datei geschrieben")
             return
 
-        output_path = Path(
-            getattr(self.config, "mt5_zones_file", "Output/mt5_zones.json")
-        )
+        output_path = self._get_zones_file_path()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         payload = {
@@ -147,7 +186,7 @@ class ChartExporter:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
         logger.info(
-            f"ChartExporter: JSON geschrieben → {output_path} "
+            f"[ChartExporter] Schreibe mt5_zones.json nach: {output_path} "
             f"({len(self._data)} Symbol(e))"
         )
 

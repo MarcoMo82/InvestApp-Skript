@@ -1,0 +1,135 @@
+{
+  "_comment": "InvestApp Konfiguration – alle Parameter hier editierbar. Secrets (API-Keys, Passwörter) bleiben in .env",
+  "_version": "1.0",
+
+  "symbols": {
+    "fallback_symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "XAUUSD", "BTCUSD"],
+    "_comment_symbols": "Wird nur genutzt wenn MT5 available_symbols.json nicht verfügbar ist",
+    "yfinance_symbol_map": {
+      "BTCUSD": "BTC-USD",
+      "ETHUSD": "ETH-USD",
+      "EURUSD": "EURUSD=X",
+      "GBPUSD": "GBPUSD=X",
+      "USDJPY": "USDJPY=X",
+      "USDCHF": "USDCHF=X",
+      "AUDUSD": "AUDUSD=X",
+      "USDCAD": "USDCAD=X",
+      "NZDUSD": "NZDUSD=X",
+      "EURGBP": "EURGBP=X",
+      "EURJPY": "EURJPY=X",
+      "GBPJPY": "GBPJPY=X",
+      "XAUUSD": "GC=F"
+    },
+    "scanner_enabled": true,
+    "scanner_max_symbols": 10,
+    "scanner_min_score": 10,
+    "scanner_top_n": 5,
+    "scanner_respect_category_limits": true,
+    "scanner_interval_minutes": 60,
+    "scanner_categories": ["forex", "indices", "commodities"],
+    "scanner_category_limits": {"forex": 5, "indices": 3, "commodities": 2, "crypto": 0}
+  },
+
+  "risk": {
+    "risk_per_trade": 0.01,
+    "max_daily_loss": 0.03,
+    "max_open_positions": 3,
+    "min_crv": 2.0,
+    "atr_period": 14,
+    "atr_sl_multiplier": 2.0,
+    "atr_tp_multiplier": 4.0,
+    "min_confidence_score": 80.0,
+    "spread_filter_multiplier": 3.0,
+    "normal_spread_pips": {
+      "EURUSD": 0.5, "GBPUSD": 1.0, "USDJPY": 0.5, "USDCHF": 1.0,
+      "AUDUSD": 0.8, "USDCAD": 1.0, "NZDUSD": 1.0, "GBPJPY": 1.5,
+      "EURJPY": 0.8, "EURGBP": 0.7, "XAUUSD": 3.0, "BTCUSD": 50.0
+    }
+  },
+
+  "sessions": {
+    "london_open_hour": 8,
+    "london_close_hour": 17,
+    "ny_open_hour": 13,
+    "ny_close_hour": 22,
+    "asian_open_hour": 0,
+    "asian_close_hour": 8
+  },
+
+  "pipeline": {
+    "cycle_interval_minutes": 5,
+    "watch_interval_seconds": 60,
+    "news_cache_ttl": 3600,
+    "confidence_threshold": 80,
+    "news_yahoo_enabled": false,
+    "simulation_mode_enabled": false,
+    "simulation_trigger_after_watch_cycles": 3,
+    "simulation_symbol": "EURUSD",
+    "simulation_direction": "long",
+    "simulation_lot_size": 0.01,
+    "startup_analysis_enabled": true
+  },
+
+  "mt5": {
+    "mt5_server": "",
+    "mt5_common_files_path": "",
+    "mt5_symbols_file": "available_symbols.json",
+    "mt5_order_file": "pending_order.json",
+    "mt5_result_file": "order_result.json",
+    "mt5_zones_file": "mt5_zones.json",
+    "mt5_zones_export_enabled": true,
+    "mt5_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  },
+
+  "chart": {
+    "htf_timeframe": "15m",
+    "entry_timeframe": "5m",
+    "htf_bars": 200,
+    "entry_bars": 100,
+    "chart_entry_tolerance_pct": 0.05,
+    "ema_periods": [9, 21, 50, 200]
+  },
+
+  "chart_colors": {
+    "chart_color_entry_long": 33023,
+    "chart_color_entry_short": 255,
+    "chart_color_sl": 255,
+    "chart_color_tp": 65280,
+    "chart_color_order_block_bull": 16776960,
+    "chart_color_order_block_bear": 16744272,
+    "chart_color_psych_level": 8421504,
+    "chart_color_key_level_support": 65280,
+    "chart_color_key_level_resistance": 255,
+    "chart_color_fvg": 5087744,
+    "chart_color_liquidity": 10235616,
+    "chart_line_width_main": 2,
+    "chart_line_width_secondary": 1
+  },
+
+  "watch_agent": {
+    "watch_agent_zone_update_enabled": true,
+    "watch_agent_zone_update_entry_tolerance_pct": 0.5,
+    "watch_agent_zone_update_ob_consumed_threshold": 0.3,
+    "watch_agent_heartbeat_interval": 5
+  },
+
+  "model": {
+    "claude_model": "claude-opus-4-6",
+    "claude_max_tokens": 2048,
+    "claude_retry_attempts": 3,
+    "claude_retry_delay": 2.0,
+    "openai_model": "gpt-4o",
+    "openai_temperature": 0.2,
+    "openai_max_tokens": 2000
+  },
+
+  "app": {
+    "trading_mode": "demo",
+    "log_level": "INFO",
+    "log_dir": "logs",
+    "output_dir": "Output",
+    "db_path": "invest_app.db",
+    "show_startup_banner": true,
+    "show_cycle_banner": true
+  }
+}

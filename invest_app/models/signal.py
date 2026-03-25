@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+import numpy as np
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Direction(str, Enum):
@@ -65,6 +66,23 @@ class Signal(BaseModel):
         default_factory=dict,
         description="Raw-Outputs aller Agenten, z.B. {'trend': {...}, 'volatility': {...}}",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def convert_numpy(cls, values: Any) -> Any:
+        """Konvertiert numpy-Typen rekursiv in native Python-Typen."""
+        def _convert(v: Any) -> Any:
+            if isinstance(v, np.generic):
+                return v.item()
+            if isinstance(v, dict):
+                return {k: _convert(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_convert(i) for i in v]
+            return v
+
+        if isinstance(values, dict):
+            return {k: _convert(v) for k, v in values.items()}
+        return values
 
     @field_validator("crv", mode="before")
     @classmethod

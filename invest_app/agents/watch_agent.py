@@ -248,9 +248,21 @@ class WatchAgent:
     def _execute_order(self, signal: dict) -> bool:
         """
         Führt eine Market-Order für ein Simulations-Signal aus.
+        Im Simulation-Modus wird kein echter MT5-Aufruf gemacht.
         Gibt True bei Erfolg zurück, False bei Fehler.
         """
         try:
+            # Simulation-Modus: direkt simulieren ohne MT5-Aufruf
+            if getattr(self._config, "simulation_mode_enabled", False):
+                sim_ticket = 999999
+                logger.info(
+                    "[Simulation] Simulation-Modus aktiv → Direkte Simulation (kein MT5-Aufruf)"
+                )
+                logger.info(f"[Simulation] ✅ Order simuliert: Ticket #{sim_ticket}")
+                if self.db is not None:
+                    self.db.save_trade(signal)
+                return True
+
             symbol = signal.get("instrument", "")
             direction = signal.get("direction", "long")
             lot_size = signal.get("lot_size", 0.01)

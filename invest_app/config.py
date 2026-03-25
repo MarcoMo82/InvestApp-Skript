@@ -1,225 +1,302 @@
 """
 Zentrale Konfiguration für das InvestApp Trading-System.
-Lädt alle Einstellungen aus der .env-Datei und stellt sie typisiert bereit.
+Lädt alle Einstellungen aus config.json, Secrets (API-Keys, Passwörter) aus .env.
 """
 
 import json
 import os
 from pathlib import Path
-from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
+CONFIG_PATH = BASE_DIR / "config.json"
+
+# Keys die nie in config.json geschrieben werden (kommen aus .env)
+_SECRET_KEYS = {"anthropic_api_key", "openai_api_key", "mt5_login", "mt5_password"}
+
+# Keys die als Path-Objekte geliefert werden (werden im JSON als Strings gespeichert)
+_PATH_KEYS = {"db_path", "log_dir", "output_dir"}
+
+# Gruppenstruktur für config.json – definiert Reihenfolge und Zugehörigkeit
+_SECTIONS: dict[str, list[str]] = {
+    "symbols": [
+        "fallback_symbols", "yfinance_symbol_map",
+        "scanner_enabled", "scanner_max_symbols", "scanner_min_score", "scanner_top_n",
+        "scanner_respect_category_limits", "scanner_interval_minutes",
+        "scanner_categories", "scanner_category_limits",
+    ],
+    "risk": [
+        "risk_per_trade", "max_daily_loss", "max_open_positions", "min_crv",
+        "atr_period", "atr_sl_multiplier", "atr_tp_multiplier", "min_confidence_score",
+        "spread_filter_multiplier", "normal_spread_pips",
+    ],
+    "sessions": [
+        "london_open_hour", "london_close_hour", "ny_open_hour", "ny_close_hour",
+        "asian_open_hour", "asian_close_hour",
+    ],
+    "pipeline": [
+        "cycle_interval_minutes", "watch_interval_seconds", "news_cache_ttl",
+        "confidence_threshold", "news_yahoo_enabled", "simulation_mode_enabled",
+        "simulation_trigger_after_watch_cycles", "simulation_symbol",
+        "simulation_direction", "simulation_lot_size", "startup_analysis_enabled",
+    ],
+    "mt5": [
+        "mt5_server", "mt5_common_files_path", "mt5_symbols_file", "mt5_order_file",
+        "mt5_result_file", "mt5_zones_file", "mt5_zones_export_enabled", "mt5_path",
+    ],
+    "chart": [
+        "htf_timeframe", "entry_timeframe", "htf_bars", "entry_bars",
+        "chart_entry_tolerance_pct", "ema_periods",
+    ],
+    "chart_colors": [
+        "chart_color_entry_long", "chart_color_entry_short", "chart_color_sl",
+        "chart_color_tp", "chart_color_order_block_bull", "chart_color_order_block_bear",
+        "chart_color_psych_level", "chart_color_key_level_support",
+        "chart_color_key_level_resistance", "chart_color_fvg", "chart_color_liquidity",
+        "chart_line_width_main", "chart_line_width_secondary",
+    ],
+    "watch_agent": [
+        "watch_agent_zone_update_enabled", "watch_agent_zone_update_entry_tolerance_pct",
+        "watch_agent_zone_update_ob_consumed_threshold", "watch_agent_heartbeat_interval",
+    ],
+    "model": [
+        "claude_model", "claude_max_tokens", "claude_retry_attempts", "claude_retry_delay",
+        "openai_model", "openai_temperature", "openai_max_tokens",
+    ],
+    "app": [
+        "trading_mode", "log_level", "log_dir", "output_dir", "db_path",
+        "show_startup_banner", "show_cycle_banner",
+    ],
+}
 
 
-@dataclass
 class Config:
-    # --- API & Verbindung ---
-    anthropic_api_key: str = field(default_factory=lambda: os.environ["ANTHROPIC_API_KEY"])
-    mt5_login: int = field(default_factory=lambda: int(os.getenv("MT5_LOGIN", "0")))
-    mt5_password: str = field(default_factory=lambda: os.getenv("MT5_PASSWORD", ""))
-    mt5_server: str = field(default_factory=lambda: os.getenv("MT5_SERVER", ""))
-    mt5_path: str = field(
-        default_factory=lambda: os.getenv(
-            "MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe"
-        )
-    )
+    """
+    Lädt Konfiguration aus config.json.
+    Fehlende Keys werden automatisch mit Defaults ergänzt und zurückgeschrieben.
+    Secrets kommen ausschließlich aus .env (nie aus config.json).
+    """
 
-    # --- Trading-Modus ---
-    trading_mode: str = field(default_factory=lambda: os.getenv("TRADING_MODE", "demo"))
-
-    # --- Risiko-Parameter ---
-    risk_per_trade: float = field(
-        default_factory=lambda: float(os.getenv("RISK_PER_TRADE", "0.01"))
-    )
-    max_daily_loss: float = field(
-        default_factory=lambda: float(os.getenv("MAX_DAILY_LOSS", "0.05"))
-    )
-    max_open_positions: int = field(
-        default_factory=lambda: int(os.getenv("MAX_OPEN_POSITIONS", "3"))
-    )
-
-    # --- Spread-Filter ---
-    normal_spread_pips: dict = field(default_factory=lambda: json.loads(
-        os.getenv("NORMAL_SPREAD_PIPS", json.dumps({
+    DEFAULTS: dict = {
+        # symbols
+        "fallback_symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "XAUUSD", "BTCUSD"],
+        "yfinance_symbol_map": {
+            "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD",
+            "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X",
+            "USDJPY": "USDJPY=X", "USDCHF": "USDCHF=X",
+            "AUDUSD": "AUDUSD=X", "USDCAD": "USDCAD=X",
+            "NZDUSD": "NZDUSD=X", "EURGBP": "EURGBP=X",
+            "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X",
+            "XAUUSD": "GC=F",
+        },
+        "scanner_enabled": True,
+        "scanner_max_symbols": 10,
+        "scanner_min_score": 10,
+        "scanner_top_n": 5,
+        "scanner_respect_category_limits": True,
+        "scanner_interval_minutes": 60,
+        "scanner_categories": ["forex", "indices", "commodities"],
+        "scanner_category_limits": {"forex": 5, "indices": 3, "commodities": 2, "crypto": 0},
+        # risk
+        "risk_per_trade": 0.01,
+        "max_daily_loss": 0.03,
+        "max_open_positions": 3,
+        "min_crv": 2.0,
+        "atr_period": 14,
+        "atr_sl_multiplier": 2.0,
+        "atr_tp_multiplier": 4.0,
+        "min_confidence_score": 80.0,
+        "spread_filter_multiplier": 3.0,
+        "normal_spread_pips": {
             "EURUSD": 0.5, "GBPUSD": 1.0, "USDJPY": 0.5, "USDCHF": 1.0,
             "AUDUSD": 0.8, "USDCAD": 1.0, "NZDUSD": 1.0, "GBPJPY": 1.5,
             "EURJPY": 0.8, "EURGBP": 0.7, "XAUUSD": 3.0, "BTCUSD": 50.0,
-        }))
-    ))
-    spread_filter_multiplier: float = field(
-        default_factory=lambda: float(os.getenv("SPREAD_FILTER_MULTIPLIER", "3.0"))
-    )
+        },
+        # sessions
+        "london_open_hour": 8,
+        "london_close_hour": 17,
+        "ny_open_hour": 13,
+        "ny_close_hour": 22,
+        "asian_open_hour": 0,
+        "asian_close_hour": 8,
+        # pipeline
+        "cycle_interval_minutes": 5,
+        "watch_interval_seconds": 60,
+        "news_cache_ttl": 3600,
+        "confidence_threshold": 80,
+        "news_yahoo_enabled": False,
+        "simulation_mode_enabled": False,
+        "simulation_trigger_after_watch_cycles": 3,
+        "simulation_symbol": "EURUSD",
+        "simulation_direction": "long",
+        "simulation_lot_size": 0.01,
+        "startup_analysis_enabled": True,
+        # mt5
+        "mt5_server": "",
+        "mt5_common_files_path": "",
+        "mt5_symbols_file": "available_symbols.json",
+        "mt5_order_file": "pending_order.json",
+        "mt5_result_file": "order_result.json",
+        "mt5_zones_file": "mt5_zones.json",
+        "mt5_zones_export_enabled": True,
+        "mt5_path": r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        # chart
+        "htf_timeframe": "15m",
+        "entry_timeframe": "5m",
+        "htf_bars": 200,
+        "entry_bars": 100,
+        "chart_entry_tolerance_pct": 0.05,
+        "ema_periods": [9, 21, 50, 200],
+        # chart_colors
+        "chart_color_entry_long": 33023,
+        "chart_color_entry_short": 255,
+        "chart_color_sl": 255,
+        "chart_color_tp": 65280,
+        "chart_color_order_block_bull": 16776960,
+        "chart_color_order_block_bear": 16744272,
+        "chart_color_psych_level": 8421504,
+        "chart_color_key_level_support": 65280,
+        "chart_color_key_level_resistance": 255,
+        "chart_color_fvg": 5087744,
+        "chart_color_liquidity": 10235616,
+        "chart_line_width_main": 2,
+        "chart_line_width_secondary": 1,
+        # watch_agent
+        "watch_agent_zone_update_enabled": True,
+        "watch_agent_zone_update_entry_tolerance_pct": 0.5,
+        "watch_agent_zone_update_ob_consumed_threshold": 0.3,
+        "watch_agent_heartbeat_interval": 5,
+        # model
+        "claude_model": "claude-opus-4-6",
+        "claude_max_tokens": 2048,
+        "claude_retry_attempts": 3,
+        "claude_retry_delay": 2.0,
+        "openai_model": "gpt-4o",
+        "openai_temperature": 0.2,
+        "openai_max_tokens": 2000,
+        # app
+        "trading_mode": "demo",
+        "log_level": "INFO",
+        "log_dir": "logs",
+        "output_dir": "Output",
+        "db_path": "invest_app.db",
+        "show_startup_banner": True,
+        "show_cycle_banner": True,
+    }
 
-    # --- Signal-Qualität ---
-    min_confidence_score: float = 80.0  # Signals unter diesem Wert werden verworfen
-    min_crv: float = 2.0                # Mindestkurs-Risiko-Verhältnis
+    def __init__(self, config_path: Path = CONFIG_PATH):
+        self._path = config_path
+        self._data: dict = {}
+        self._load()
 
-    # --- ATR-Parameter ---
-    atr_period: int = 14
-    atr_sl_multiplier: float = 2.0      # SL = ATR * Multiplier
-    atr_tp_multiplier: float = 4.0      # TP = ATR * Multiplier (ergibt CRV 1:2)
+    def _load(self) -> None:
+        if self._path.exists():
+            with open(self._path, encoding="utf-8") as f:
+                raw = json.load(f)
+            flat: dict = {}
+            for key, val in raw.items():
+                if key.startswith("_"):
+                    continue
+                if isinstance(val, dict):
+                    # Section-Dict: Inhalte flach übernehmen
+                    # (dict-Werte wie normal_spread_pips bleiben als dict erhalten)
+                    for k, v in val.items():
+                        flat[k] = v
+                else:
+                    flat[key] = val
+        else:
+            flat = {}
 
-    # --- Zeitrahmen ---
-    htf_timeframe: str = "15m"          # Higher Timeframe für Trend
-    entry_timeframe: str = "5m"         # Entry-Zeitrahmen
-    htf_bars: int = 200                 # Anzahl Bars für HTF-Analyse
-    entry_bars: int = 100               # Anzahl Bars für Entry-Analyse
+        # Fehlende Keys mit Defaults ergänzen
+        changed = not self._path.exists()
+        for key, default in self.DEFAULTS.items():
+            if key not in flat:
+                flat[key] = default
+                changed = True
 
-    # --- EMA-Parameter ---
-    ema_periods: list = field(default_factory=lambda: [9, 21, 50, 200])
+        # Path-Keys als Path-Objekte relativ zum Config-Verzeichnis
+        base = self._path.parent
+        flat["db_path"] = base / str(flat.get("db_path", "invest_app.db"))
+        flat["log_dir"] = base / str(flat.get("log_dir", "logs"))
+        flat["output_dir"] = base / str(flat.get("output_dir", "Output"))
 
-    # --- Symbole / Märkte ---
-    forex_symbols: list = field(default_factory=lambda: [
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-        "EURGBP", "EURJPY", "GBPJPY",
-    ])
-    stock_symbols: list = field(default_factory=lambda: [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META",
-    ])
-    crypto_symbols: list = field(default_factory=lambda: [
-        "BTCUSD", "ETHUSD",
-    ])
+        self._data = flat
 
-    # yfinance-Symbole (abweichende Namensgebung)
-    yfinance_symbol_map: dict = field(default_factory=lambda: {
-        "BTCUSD": "BTC-USD",
-        "ETHUSD": "ETH-USD",
-        "EURUSD": "EURUSD=X",
-        "GBPUSD": "GBPUSD=X",
-        "USDJPY": "USDJPY=X",
-        "USDCHF": "USDCHF=X",
-        "AUDUSD": "AUDUSD=X",
-        "USDCAD": "USDCAD=X",
-        "NZDUSD": "NZDUSD=X",
-        "EURGBP": "EURGBP=X",
-        "EURJPY": "EURJPY=X",
-        "GBPJPY": "GBPJPY=X",
-    })
+        # Secrets aus .env – niemals aus config.json lesen oder dorthin schreiben
+        self._data["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
+        self._data["openai_api_key"] = os.getenv("OPENAI_API_KEY", "")
+        self._data["mt5_login"] = int(os.getenv("MT5_LOGIN", "0") or "0")
+        self._data["mt5_password"] = os.getenv("MT5_PASSWORD", "")
+        # MT5_SERVER aus .env überschreibt config.json (ist ein Secret)
+        env_server = os.getenv("MT5_SERVER", "")
+        if env_server:
+            self._data["mt5_server"] = env_server
 
-    # --- Trading-Sessions ---
-    london_open_hour: int = 8    # UTC
-    london_close_hour: int = 17  # UTC
-    ny_open_hour: int = 13       # UTC
-    ny_close_hour: int = 22      # UTC
+        # Verzeichnisse anlegen
+        self._data["log_dir"].mkdir(exist_ok=True)
+        self._data["output_dir"].mkdir(exist_ok=True)
 
-    # --- Scheduler ---
-    cycle_interval_minutes: int = field(
-        default_factory=lambda: int(os.getenv("CYCLE_INTERVAL_MINUTES", "5"))
-    )
-    news_cache_ttl: int = field(default_factory=lambda: int(os.getenv("NEWS_CACHE_TTL", "3600")))  # 60 Minuten
+        # Auto-Migration: neue Keys in config.json nachschreiben
+        if changed:
+            self._save()
 
-    # --- Claude-Modell ---
-    claude_model: str = "claude-opus-4-6"
-    claude_max_tokens: int = 2048
-    claude_retry_attempts: int = 3
-    claude_retry_delay: float = 2.0  # Sekunden zwischen Retries
+    def _save(self) -> None:
+        """Schreibt alle nicht-Secret Parameter gruppiert zurück nach config.json."""
+        output: dict = {
+            "_comment": "InvestApp Konfiguration – alle Parameter hier editierbar. Secrets (API-Keys, Passwörter) bleiben in .env",
+            "_version": "1.0",
+        }
 
-    # --- Pfade ---
-    db_path: Path = field(default_factory=lambda: BASE_DIR / "invest_app.db")
-    log_dir: Path = field(default_factory=lambda: BASE_DIR / "logs")
-    output_dir: Path = field(default_factory=lambda: BASE_DIR / "Output")
-    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+        # Werte vorbereiten: Path → str (relativ), Secrets ausschließen
+        values: dict = {}
+        for k, v in self._data.items():
+            if k in _SECRET_KEYS:
+                continue
+            if isinstance(v, Path):
+                try:
+                    values[k] = str(v.relative_to(self._path.parent))
+                except ValueError:
+                    values[k] = str(v)
+            else:
+                values[k] = v
 
-    # --- MT5 Order-Datei-Protokoll ---
-    mt5_common_files_path: str = ""  # Leer = Output/ verwenden; sonst MT5 Common Files Pfad
+        # Gruppiert in Sections schreiben
+        written_keys: set = set()
+        for section, keys in _SECTIONS.items():
+            section_dict: dict = {}
+            for key in keys:
+                if key in values:
+                    section_dict[key] = values[key]
+                    written_keys.add(key)
+            if section_dict:
+                output[section] = section_dict
 
-    # --- Chart Export (MT5-Visualisierung) ---
-    mt5_zones_file: str = field(
-        default_factory=lambda: os.getenv("MT5_ZONES_FILE", "Output/mt5_zones.json")
-    )
-    mt5_zones_export_enabled: bool = field(
-        default_factory=lambda: os.getenv("MT5_ZONES_EXPORT_ENABLED", "true").lower() == "true"
-    )
+        # Verbleibende Keys (nicht in _SECTIONS) in "other" schreiben
+        other: dict = {k: v for k, v in values.items() if k not in written_keys}
+        if other:
+            output["other"] = other
 
-    # --- News-Quellen ---
-    news_yahoo_enabled: bool = field(
-        default_factory=lambda: os.getenv("NEWS_YAHOO_ENABLED", "False").lower() == "true"
-    )
+        with open(self._path, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
 
-    # --- Test-Modus (Simulation) ---
-    simulation_mode_enabled: bool = field(
-        default_factory=lambda: os.getenv("SIMULATION_MODE_ENABLED", "False").lower() == "true"
-    )
-    simulation_trigger_after_watch_cycles: int = field(
-        default_factory=lambda: int(os.getenv("SIMULATION_TRIGGER_AFTER_WATCH_CYCLES", "3"))
-    )
-    simulation_symbol: str = field(
-        default_factory=lambda: os.getenv("SIMULATION_SYMBOL", "EURUSD")
-    )
-    simulation_direction: str = field(
-        default_factory=lambda: os.getenv("SIMULATION_DIRECTION", "long")
-    )
-    simulation_lot_size: float = field(
-        default_factory=lambda: float(os.getenv("SIMULATION_LOT_SIZE", "0.01"))
-    )
-
-    # --- Konsolen-Ausgabe ---
-    show_startup_banner: bool = True
-    show_cycle_banner: bool = True
-    watch_agent_heartbeat_interval: int = 5  # alle N Watch-Zyklen
-    startup_analysis_enabled: bool = True    # Sofort-Analyse beim Start
-
-    # --- Scanner ---
-    scanner_enabled: bool = field(
-        default_factory=lambda: os.getenv("SCANNER_ENABLED", "True").lower() == "true"
-    )
-    scanner_max_symbols: int = field(
-        default_factory=lambda: int(os.getenv("SCANNER_MAX_SYMBOLS", "10"))
-    )
-    scanner_interval_minutes: int = field(
-        default_factory=lambda: int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
-    )
-    scanner_categories: list = field(
-        default_factory=lambda: ["forex", "indices", "commodities"]
-    )
-    scanner_category_limits: dict = field(
-        default_factory=lambda: {"forex": 5, "indices": 3, "commodities": 2, "crypto": 0}
-    )
-
-    # Entry-Toleranz für die Zonenberechnung (Prozent vom Preis)
-    chart_entry_tolerance_pct: float = 0.05
-
-    # --- Watch-Agent: Zone-Update ---
-    watch_agent_zone_update_enabled: bool = field(
-        default_factory=lambda: os.getenv("WATCH_AGENT_ZONE_UPDATE_ENABLED", "True") == "True"
-    )
-    watch_agent_zone_update_entry_tolerance_pct: float = field(
-        default_factory=lambda: float(os.getenv("WATCH_AGENT_ZONE_UPDATE_ENTRY_TOLERANCE_PCT", "0.5"))
-    )
-    # Order Block gilt als konsumiert wenn Kurs > 0.3 ATR tief eingedrungen ist
-    watch_agent_zone_update_ob_consumed_threshold: float = field(
-        default_factory=lambda: float(os.getenv("WATCH_AGENT_ZONE_UPDATE_OB_CONSUMED_THRESHOLD", "0.3"))
-    )
-
-    # Farben als MQL5 Color-Codes (int, BGR-Format)
-    chart_color_entry_long: int = 33023           # blau
-    chart_color_entry_short: int = 255            # rot
-    chart_color_sl: int = 255                     # rot
-    chart_color_tp: int = 65280                   # grün
-    chart_color_order_block_bull: int = 16776960  # gelb
-    chart_color_order_block_bear: int = 16744272  # orange
-    chart_color_psych_level: int = 8421504        # grau
-    chart_color_key_level_support: int = 65280    # grün
-    chart_color_key_level_resistance: int = 255   # rot
-
-    # Linienbreiten
-    chart_line_width_main: int = 2
-    chart_line_width_secondary: int = 1
-
-    def __post_init__(self) -> None:
-        self.log_dir.mkdir(exist_ok=True)
-        self.output_dir.mkdir(exist_ok=True)
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self._data[name]
+        except KeyError:
+            raise AttributeError(f"Config hat keinen Parameter '{name}'")
 
     @property
     def all_symbols(self) -> list[str]:
-        return self.forex_symbols + self.stock_symbols + self.crypto_symbols
+        # Rückwärtskompatibilität: gibt fallback_symbols zurück
+        return self._data.get("fallback_symbols", self._data.get("all_symbols", []))
 
     @property
     def is_live(self) -> bool:
-        return self.trading_mode.lower() == "live"
+        return self._data.get("trading_mode", "demo").lower() == "live"
 
 
 # Singleton-Instanz

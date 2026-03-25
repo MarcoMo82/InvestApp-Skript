@@ -23,28 +23,50 @@ class ScannerAgent:
         all_symbols = self._get_broker_symbols()
         self.logger.info(f"[Scanner] {len(all_symbols)} Symbole von MT5 geladen")
         candidates = self._filter_by_category(all_symbols)
-        scored: list[tuple[str, float]] = []
+        min_score = getattr(self.config, "scanner_min_score", 10)
+        scored: list[tuple[str, float, dict]] = []
         for symbol in candidates:
-            score = self._score_symbol(symbol)
-            if score > 0:
-                scored.append((symbol, score))
-        self.active_symbols = self._select_top_symbols(scored)
+            score, breakdown = self._score_symbol(symbol)
+            if score >= min_score:
+                scored.append((symbol, score, breakdown))
+        self.active_symbols, cat_excluded = self._select_top_symbols(scored)
         self.logger.info(
             f"[Scanner] {len(candidates)} gescannt, {len(scored)} gescort, "
-            f"{len(self.active_symbols)} ausgewählt"
+            f"{len(self.active_symbols)} ausgewählt, {cat_excluded} durch Kategorie-Limit aussortiert"
         )
         return self.active_symbols
 
     def _get_broker_symbols(self) -> list[str]:
-        """Holt Symbole vom Connector, Fallback auf config.symbols."""
-        try:
-            if hasattr(self.connector, "get_symbols"):
-                syms = self.connector.get_symbols()
-                if syms:
-                    return syms
-        except Exception:
-            pass
-        return list(getattr(self.config, "all_symbols", []))
+        """
+        Priorität:
+        1. available_symbols.json von MT5 EA (primär, aktuell)
+        2. MT5 API direkt (wenn verbunden)
+        3. config.fallback_symbols (letzter Ausweg)
+        """
+        # 1. Datei vom EA lesen
+        if hasattr(self.connector, "get_symbols_from_file"):
+            try:
+                symbols = self.connector.get_symbols_from_file()
+                if symbols:
+                    self.logger.info(f"[Scanner] {len(symbols)} Symbole aus available_symbols.json geladen")
+                    return symbols
+            except Exception as e:
+                self.logger.warning(f"[Scanner] get_symbols_from_file() fehlgeschlagen: {e}")
+
+        # 2. MT5 API
+        if hasattr(self.connector, "get_symbols"):
+            try:
+                symbols = self.connector.get_symbols()
+                if symbols:
+                    self.logger.info(f"[Scanner] {len(symbols)} Symbole via MT5 API geladen")
+                    return symbols
+            except Exception as e:
+                self.logger.warning(f"[Scanner] get_symbols() fehlgeschlagen: {e}")
+
+        # 3. Fallback
+        fallback = list(getattr(self.config, "fallback_symbols", getattr(self.config, "all_symbols", [])))
+        self.logger.warning(f"[Scanner] Fallback: {len(fallback)} hardcodierte Symbole")
+        return fallback
 
     def _get_category(self, symbol: str) -> str:
         """Klassifiziert ein Symbol in eine Kategorie."""
@@ -69,14 +91,6 @@ class ScannerAgent:
             "F40", "W20", "US500", "US2000",
         ]):
             return "indices"
-        # Bekannte US-Aktien (Broker listet oft als Einzelsymbol ohne Suffix)
-        if s in {
-            "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "TSLA", "NVDA", "META",
-            "BRK", "JPM", "V", "MA", "UNH", "JNJ", "WMT", "PG", "HD", "BAC",
-            "KO", "PFE", "DIS", "NFLX", "PYPL", "INTC", "AMD", "CSCO", "ORCL",
-            "ADBE", "CRM", "QCOM", "TXN", "AVGO", "NOW", "UBER", "ABNB",
-        }:
-            return "stocks"
         return "other"
 
     def _filter_by_category(self, symbols: list[str]) -> list[str]:
@@ -84,8 +98,13 @@ class ScannerAgent:
         categories = getattr(self.config, "scanner_categories", ["forex", "indices", "commodities"])
         return [s for s in symbols if self._get_category(s) in categories]
 
-    def _score_symbol(self, symbol: str) -> float:
-        """Bewertet ein Symbol nach ATR, EMA-Abstand, RSI und rundem Level."""
+    def _score_symbol(self, symbol: str) -> tuple[float, dict]:
+        """Bewertet ein Symbol nach ATR, EMA-Abstand, RSI und rundem Level.
+
+        Returns:
+            (score, breakdown) – score als float, breakdown als Detail-Dict
+        """
+        breakdown: dict = {}
         score = 0.0
         try:
             import pandas as pd
@@ -93,7 +112,7 @@ class ScannerAgent:
             timeframe = getattr(self.config, "htf_timeframe", "15m")
             ohlcv = self.connector.get_ohlcv(symbol, timeframe, 50)
             if ohlcv is None or len(ohlcv) < 20:
-                return 0.0
+                return 0.0, breakdown
 
             # DataFrame oder Liste → pandas Series
             if hasattr(ohlcv, "columns"):
@@ -113,12 +132,13 @@ class ScannerAgent:
             atr = tr.rolling(14).mean().iloc[-1]
             atr_avg = tr.rolling(20).mean().mean()
             if atr_avg <= 0 or pd.isna(atr):
-                return 0.0
+                return 0.0, breakdown
             atr_ratio = atr / atr_avg
             if atr_ratio < 0.5 or atr_ratio > 2.5:
-                return 0.0
+                return 0.0, breakdown
             if 0.7 <= atr_ratio <= 2.0:
                 score += 30
+                breakdown["atr"] = 30
 
             # EMA21-Abstand
             ema21 = closes.ewm(span=21).mean().iloc[-1]
@@ -127,10 +147,13 @@ class ScannerAgent:
                 ema_dist_pct = abs(current - ema21) / current * 100
                 if ema_dist_pct < 0.3:
                     score += 25
+                    breakdown["ema_dist"] = 25
                 elif ema_dist_pct < 0.8:
                     score += 15
+                    breakdown["ema_dist"] = 15
                 elif ema_dist_pct < 1.5:
                     score += 5
+                    breakdown["ema_dist"] = 5
 
             # RSI(14)
             delta = closes.diff()
@@ -140,25 +163,17 @@ class ScannerAgent:
             rsi = (100 - 100 / (1 + rs)).iloc[-1]
             if 35 <= rsi <= 65:
                 score += 20
+                breakdown["rsi"] = 20
             elif 25 <= rsi <= 75:
                 score += 10
+                breakdown["rsi"] = 10
             else:
                 score -= 10
+                breakdown["rsi"] = -10
 
-            # P1.3: Spread-Check via MT5-Tick wenn verfügbar, sonst kein Bonus
-            if hasattr(self.connector, "get_current_spread_pips"):
-                try:
-                    spread_pips = self.connector.get_current_spread_pips(symbol)
-                    normal_spreads = getattr(self.config, "normal_spread_pips", {})
-                    multiplier = getattr(self.config, "spread_filter_multiplier", 3.0)
-                    if spread_pips > 0 and symbol in normal_spreads:
-                        normal = normal_spreads[symbol]
-                        if spread_pips <= normal * multiplier:
-                            score += 15
-                    elif spread_pips == 0:
-                        score += 15  # kein Tick verfügbar → neutral
-                except Exception:
-                    pass  # kein Bonus bei Fehler
+            # Spread-Bonus (default OK, kein Tick-Abruf erforderlich)
+            score += 15
+            breakdown["spread"] = 15
 
             # Rundes Level
             magnitude = 10 ** max(0, len(str(int(current))) - 1)
@@ -167,19 +182,36 @@ class ScannerAgent:
                 dist_atr = abs(current - nearest) / atr
                 if dist_atr < 1.0:
                     score += 10
+                    breakdown["round_level"] = 10
                 elif dist_atr < 2.0:
                     score += 5
+                    breakdown["round_level"] = 5
 
         except Exception as e:
             self.logger.warning(f"[Scanner] Score-Fehler {symbol}: {e}")
-            return 0.0
+            return 0.0, {}
 
-        return max(0.0, score)
+        result = max(0.0, score)
+        breakdown["total"] = result
+        return result, breakdown
 
-    def _select_top_symbols(self, scored: list[tuple[str, float]]) -> list[str]:
-        """Wählt Top-N Symbole unter Einhaltung kategorie-spezifischer Limits."""
-        scored.sort(key=lambda x: x[1], reverse=True)
+    def _select_top_symbols(
+        self, scored: list[tuple[str, float, dict]]
+    ) -> tuple[list[str], int]:
+        """Wählt Top-N Symbole unter Einhaltung kategorie-spezifischer Limits.
+
+        Returns:
+            (selected, cat_excluded) – ausgewählte Symbole und Anzahl durch Kategorie-Limit aussortierter
+        """
+        scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)
         max_total = getattr(self.config, "scanner_max_symbols", 10)
+        respect_limits = getattr(self.config, "scanner_respect_category_limits", True)
+
+        if not respect_limits:
+            # Ohne Kategorie-Limits: einfach Top-N nach Score
+            selected = [s for s, _, _ in scored_sorted[:max_total]]
+            return selected, 0
+
         cat_limits: dict[str, int] = getattr(
             self.config,
             "scanner_category_limits",
@@ -187,7 +219,8 @@ class ScannerAgent:
         )
         counts: dict[str, int] = {}
         selected: list[str] = []
-        for symbol, _score in scored:
+        cat_excluded = 0
+        for symbol, _score, _breakdown in scored_sorted:
             if len(selected) >= max_total:
                 break
             cat = self._get_category(symbol)
@@ -195,7 +228,9 @@ class ScannerAgent:
             if counts.get(cat, 0) < limit:
                 selected.append(symbol)
                 counts[cat] = counts.get(cat, 0) + 1
-        return selected
+            else:
+                cat_excluded += 1
+        return selected, cat_excluded
 
     def log_watchlist(self, previous: list[str] | None = None) -> None:
         """Loggt die aktuelle Watchlist mit Änderungen gegenüber vorheriger."""
@@ -204,12 +239,12 @@ class ScannerAgent:
             added = [s for s in self.active_symbols if s not in previous]
             if added or removed:
                 self.logger.info(
-                    f"[Scanner] Watchlist geändert: +{len(added)} hinzu, -{len(removed)} entfernt"
+                    f"[Scanner] Watchlist-Änderung: +{len(added)} hinzu, -{len(removed)} entfernt"
                 )
                 for s in added:
-                    self.logger.info(f"[Scanner]   + {s} neu aufgenommen")
+                    self.logger.info(f"[Scanner] +{s} neu aufgenommen")
                 for s in removed:
-                    self.logger.info(f"[Scanner]   - {s} entfernt")
+                    self.logger.info(f"[Scanner] -{s} entfernt")
             else:
                 self.logger.info("[Scanner] Watchlist unverändert")
         self.logger.info(

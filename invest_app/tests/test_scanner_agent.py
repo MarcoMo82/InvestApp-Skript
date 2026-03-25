@@ -15,7 +15,8 @@ def make_config(**kwargs):
     cfg.scanner_respect_category_limits = kwargs.get("scanner_respect_category_limits", True)
     cfg.scanner_min_score = kwargs.get("scanner_min_score", 10)
     cfg.htf_timeframe = "15m"
-    cfg.all_symbols = kwargs.get("all_symbols", ["EURUSD", "GBPUSD"])
+    cfg.fallback_symbols = kwargs.get("fallback_symbols", ["EURUSD", "GBPUSD"])
+    cfg.all_symbols = cfg.fallback_symbols
     return cfg
 
 
@@ -217,3 +218,37 @@ def test_cat_excluded_count_returned():
     ]
     result, cat_excluded = agent._select_top_symbols(scored)
     assert cat_excluded == 2  # GBPUSD und USDJPY aussortiert
+
+
+def test_get_broker_symbols_from_file():
+    """Wenn get_symbols_from_file() Symbole zurückgibt, wird Fallback nicht genutzt."""
+    cfg = make_config(fallback_symbols=["EURUSD", "GBPUSD"])
+    connector = MagicMock()
+    connector.get_symbols_from_file.return_value = ["EURUSD", "GBPUSD", "GER40", "XAUUSD"]
+    connector.get_symbols.return_value = []
+    agent = ScannerAgent(cfg, connector)
+    result = agent._get_broker_symbols()
+    assert result == ["EURUSD", "GBPUSD", "GER40", "XAUUSD"]
+    connector.get_symbols.assert_not_called()
+
+
+def test_get_broker_symbols_api_fallback():
+    """Wenn Datei leer, wird MT5 API genutzt."""
+    cfg = make_config(fallback_symbols=["EURUSD"])
+    connector = MagicMock()
+    connector.get_symbols_from_file.return_value = []
+    connector.get_symbols.return_value = ["EURUSD", "GBPUSD", "USDJPY"]
+    agent = ScannerAgent(cfg, connector)
+    result = agent._get_broker_symbols()
+    assert result == ["EURUSD", "GBPUSD", "USDJPY"]
+
+
+def test_get_broker_symbols_fallback_config():
+    """Wenn Datei fehlt und API leer, wird fallback_symbols genutzt."""
+    cfg = make_config(fallback_symbols=["EURUSD", "XAUUSD", "BTCUSD"])
+    connector = MagicMock()
+    connector.get_symbols_from_file.return_value = []
+    connector.get_symbols.return_value = []
+    agent = ScannerAgent(cfg, connector)
+    result = agent._get_broker_symbols()
+    assert result == ["EURUSD", "XAUUSD", "BTCUSD"]

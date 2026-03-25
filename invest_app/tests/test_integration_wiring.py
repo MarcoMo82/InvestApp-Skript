@@ -47,39 +47,46 @@ def _make_mock_config(**kwargs) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Config liest Bool-Werte case-insensitiv
+# Test 1: Config liest Bool-Werte korrekt aus config.json
 # ---------------------------------------------------------------------------
 
 class TestConfigBoolParsing:
-    """Config muss 'true', 'True', 'TRUE' alle als True lesen (und entsprechend False)."""
+    """Config muss Boolean-Werte korrekt aus config.json laden."""
 
-    @pytest.mark.parametrize("field,env_var", [
-        ("simulation_mode_enabled", "SIMULATION_MODE_ENABLED"),
-        ("news_yahoo_enabled",       "NEWS_YAHOO_ENABLED"),
-        ("scanner_enabled",          "SCANNER_ENABLED"),
-    ])
-    def test_true_variants(self, field, env_var):
+    def test_defaults_are_bool(self):
+        """Boolean-Defaults müssen echte Python-bool sein (nicht str)."""
         from config import Config
-        for val in ["true", "True", "TRUE"]:
-            with patch.dict(os.environ, {env_var: val}):
-                cfg = Config()
-                assert getattr(cfg, field) is True, (
-                    f"{field}: Erwartet True für Env-Wert '{val}'"
-                )
+        cfg = Config()
+        assert isinstance(cfg.simulation_mode_enabled, bool), "simulation_mode_enabled muss bool sein"
+        assert isinstance(cfg.news_yahoo_enabled, bool), "news_yahoo_enabled muss bool sein"
+        assert isinstance(cfg.scanner_enabled, bool), "scanner_enabled muss bool sein"
 
-    @pytest.mark.parametrize("field,env_var", [
-        ("simulation_mode_enabled", "SIMULATION_MODE_ENABLED"),
-        ("news_yahoo_enabled",       "NEWS_YAHOO_ENABLED"),
-        ("scanner_enabled",          "SCANNER_ENABLED"),
-    ])
-    def test_false_variants(self, field, env_var):
+    def test_json_true_loads_as_true(self, tmp_path):
+        """Wert true in config.json wird als Python True geladen."""
+        import json
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "pipeline": {"simulation_mode_enabled": True, "news_yahoo_enabled": False},
+            "symbols": {"scanner_enabled": True},
+        }))
         from config import Config
-        for val in ["false", "False", "FALSE"]:
-            with patch.dict(os.environ, {env_var: val}):
-                cfg = Config()
-                assert getattr(cfg, field) is False, (
-                    f"{field}: Erwartet False für Env-Wert '{val}'"
-                )
+        cfg = Config(config_path=cfg_file)
+        assert cfg.simulation_mode_enabled is True
+        assert cfg.news_yahoo_enabled is False
+        assert cfg.scanner_enabled is True
+
+    def test_json_false_loads_as_false(self, tmp_path):
+        """Wert false in config.json wird als Python False geladen."""
+        import json
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "pipeline": {"simulation_mode_enabled": False},
+            "symbols": {"scanner_enabled": False},
+        }))
+        from config import Config
+        cfg = Config(config_path=cfg_file)
+        assert cfg.simulation_mode_enabled is False
+        assert cfg.scanner_enabled is False
 
 
 # ---------------------------------------------------------------------------

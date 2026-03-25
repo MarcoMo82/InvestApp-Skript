@@ -20,16 +20,17 @@ class TestConfig:
         assert config.atr_sl_multiplier == pytest.approx(2.0)
         assert config.atr_tp_multiplier == pytest.approx(4.0)
 
-    def test_config_symbols(self, config):
-        assert "EURUSD" in config.forex_symbols
-        assert "AAPL" in config.stock_symbols
-        assert "BTCUSD" in config.crypto_symbols
+    def test_config_fallback_symbols(self, config):
+        assert "EURUSD" in config.fallback_symbols
+        assert "BTCUSD" in config.fallback_symbols
+        assert len(config.fallback_symbols) >= 5
 
     def test_config_all_symbols(self, config):
+        # all_symbols gibt fallback_symbols zurück (Rückwärtskompatibilität)
         all_syms = config.all_symbols
         assert len(all_syms) > 0
         assert "EURUSD" in all_syms
-        assert "AAPL" in all_syms
+        assert all_syms == config.fallback_symbols
 
     def test_config_is_not_live(self, config):
         assert config.is_live is False

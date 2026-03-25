@@ -6,10 +6,11 @@ Läuft nur auf Windows mit installiertem MT5-Terminal.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -44,7 +45,9 @@ class MT5Connector:
     Ermöglicht Marktdaten-Abruf und Order-Ausführung.
     """
 
-    def __init__(self, login: int, password: str, server: str, path: str = "") -> None:
+    def __init__(
+        self, login: int, password: str, server: str, path: str = "", config: Any = None
+    ) -> None:
         if not MT5_AVAILABLE:
             raise EnvironmentError(
                 "MetaTrader5 ist nicht installiert. Unter Linux/Mac den YFinanceConnector verwenden."
@@ -53,7 +56,9 @@ class MT5Connector:
         self.password = password
         self.server = server
         self.path = path
+        self.config = config
         self._connected = False
+        self._last_ipc_log: Optional[datetime] = None
 
     def connect(self) -> bool:
         """Stellt Verbindung zum MT5-Terminal her."""
@@ -110,8 +115,15 @@ class MT5Connector:
 
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
         if rates is None or len(rates) == 0:
-            logger.error(f"Keine Daten für {symbol} [{timeframe}]: {mt5.last_error()}")
-            return pd.DataFrame()
+            err = mt5.last_error()
+            if err and self._is_ipc_error(err[0]):
+                self._log_ipc_error_debounced(symbol)
+                if self._try_reconnect():
+                    rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+            else:
+                logger.error(f"Keine Daten für {symbol} [{timeframe}]: {err}")
+            if rates is None or len(rates) == 0:
+                return pd.DataFrame()
 
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
@@ -130,8 +142,15 @@ class MT5Connector:
         self._require_connection()
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            logger.error(f"Kein Tick für {symbol}: {mt5.last_error()}")
-            return {}
+            err = mt5.last_error()
+            if err and self._is_ipc_error(err[0]):
+                self._log_ipc_error_debounced(symbol)
+                if self._try_reconnect():
+                    tick = mt5.symbol_info_tick(symbol)
+            else:
+                logger.error(f"Kein Tick für {symbol}: {err}")
+            if tick is None:
+                return {}
         return {
             "bid": tick.bid,
             "ask": tick.ask,
@@ -183,7 +202,9 @@ class MT5Connector:
 
         result = mt5.order_send(request)
         if result is not None and result.retcode == 10027:  # AutoTrading disabled
-            logger.warning("[Order] AutoTrading deaktiviert → Fallback auf Datei-Protokoll")
+            logger.warning(
+                "[mt5_connector] retcode=10027 (AutoTrading disabled) → Fallback auf file-basierte Order"
+            )
             signal_dict = {
                 "symbol": signal.instrument,
                 "direction": "buy" if str(signal.direction) == "long" else "sell",
@@ -208,7 +229,6 @@ class MT5Connector:
 
     def write_order_file(self, signal: dict) -> bool:
         """Schreibt Order in pending_order.json für MQL5 EA."""
-        from config import config as app_config
         order = {
             "timestamp": time.time(),
             "symbol": signal.get("symbol"),
@@ -219,11 +239,12 @@ class MT5Connector:
             "comment": "InvestApp",
             "status": "pending",
         }
-        common_path = getattr(app_config, "mt5_common_files_path", "")
-        if common_path:
-            path = Path(common_path) / "pending_order.json"
-        else:
-            path = Path(app_config.output_dir) / "pending_order.json"
+        common_path = self._get_common_files_path()
+        path = common_path / "pending_order.json"
+        logger.info(f"[mt5_connector] Schreibe pending_order.json nach: {common_path}")
+        logger.warning(
+            "[mt5_connector] HINWEIS: Stelle sicher dass InvestApp_Zones EA auf einem Chart läuft!"
+        )
         with open(path, "w") as f:
             json.dump(order, f, indent=2)
         logger.info(
@@ -234,12 +255,7 @@ class MT5Connector:
 
     def read_order_result(self, timeout_seconds: int = 10) -> dict:
         """Wartet auf Ergebnis vom EA (pending_order.json status != pending)."""
-        from config import config as app_config
-        common_path = getattr(app_config, "mt5_common_files_path", "")
-        if common_path:
-            path = Path(common_path) / "pending_order.json"
-        else:
-            path = Path(app_config.output_dir) / "pending_order.json"
+        path = self._get_common_files_path() / "pending_order.json"
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             try:
@@ -383,6 +399,25 @@ class MT5Connector:
             request["tp"] = float(take_profit)
 
         result = mt5.order_send(request)
+
+        if result is not None and result.retcode == 10027:  # AutoTrading disabled
+            logger.warning(
+                "[mt5_connector] retcode=10027 (AutoTrading disabled) → Fallback auf file-basierte Order"
+            )
+            signal_dict = {
+                "symbol": symbol,
+                "direction": "buy" if direction == "long" else "sell",
+                "volume": float(lot_size),
+                "sl": stop_loss,
+                "tp": take_profit,
+            }
+            self.write_order_file(signal_dict)
+            result_data = self.read_order_result()
+            if isinstance(result_data, dict) and result_data.get("status") != "timeout":
+                ticket = result_data.get("ticket") or result_data.get("order_id")
+                return int(ticket) if ticket is not None else None
+            return None
+
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             retcode = result.retcode if result else "None"
             comment = result.comment if result else ""
@@ -478,27 +513,27 @@ class MT5Connector:
     def get_symbols_from_file(self, output_dir: str = "Output") -> list[str]:
         """
         Liest Symbole aus der von MQL5 EA exportierten available_symbols.json.
-        Fallback auf mt5.symbols_get() wenn Datei nicht vorhanden.
+        Unterstützt beide Formate:
+          - Einfaches Array: ["EURUSD", "GBPUSD", ...]
+          - Dict mit Objekten: {"symbols": [{"name": "EURUSD"}, ...]}
+        Gibt leere Liste zurück wenn Datei nicht vorhanden (kein interner Fallback).
         """
-        import json
-        import time
-        from pathlib import Path
+        common_path = self._get_common_files_path()
+        filename = "available_symbols.json"
 
+        search_paths = [common_path / filename]
+        # Zusätzlich Output-Verzeichnis als Fallback-Suchpfad
         cfg = getattr(self, "config", None)
-        common_path = getattr(cfg, "mt5_common_files_path", "") if cfg else ""
-        out_dir = str(getattr(cfg, "output_dir", output_dir)) if cfg else output_dir
-
-        search_paths = []
-        if common_path:
-            search_paths.append(Path(common_path) / "available_symbols.json")
-        search_paths.append(Path(out_dir) / "available_symbols.json")
+        out_dir = Path(str(getattr(cfg, "output_dir", output_dir))) if cfg else Path(output_dir)
+        if out_dir != common_path:
+            search_paths.append(out_dir / filename)
 
         for path in search_paths:
             if not path.exists():
                 continue
 
             age_minutes = (time.time() - path.stat().st_mtime) / 60
-            if age_minutes > 5:
+            if age_minutes > 10:
                 logger.warning(
                     f"[Symbols] available_symbols.json ist {age_minutes:.0f} Min alt "
                     f"— EA läuft möglicherweise nicht"
@@ -508,7 +543,19 @@ class MT5Connector:
                 with open(path, encoding="utf-8") as f:
                     data = json.load(f)
 
-                symbols = [s["name"] for s in data.get("symbols", []) if s.get("name")]
+                # Format-Erkennung: einfaches Array oder Dict mit Objekten
+                if isinstance(data, list):
+                    # Einfaches Array: ["EURUSD", ...] oder [{"name": "EURUSD"}, ...]
+                    symbols = []
+                    for item in data:
+                        if isinstance(item, str):
+                            symbols.append(item)
+                        elif isinstance(item, dict) and item.get("name"):
+                            symbols.append(item["name"])
+                else:
+                    # Dict-Format: {"symbols": [{"name": "EURUSD"}, ...]}
+                    symbols = [s["name"] for s in data.get("symbols", []) if s.get("name")]
+
                 logger.info(
                     f"[Symbols] {len(symbols)} Symbole aus EA-Export geladen "
                     f"(Datei: {path.name}, Alter: {age_minutes:.1f} Min)"
@@ -517,8 +564,7 @@ class MT5Connector:
             except Exception as e:
                 logger.warning(f"[Symbols] Fehler beim Lesen von {path}: {e}")
 
-        logger.info("[Symbols] EA-Export nicht gefunden → Fallback auf mt5.symbols_get()")
-        return self.get_symbols()
+        return []
 
     def get_symbols(self) -> list[str]:
         """Gibt alle sichtbaren Symbole des Brokers zurück."""
@@ -546,6 +592,12 @@ class MT5Connector:
             return 0
         try:
             count = mt5.positions_total()
+            if count is None:
+                err = mt5.last_error()
+                if err and self._is_ipc_error(err[0]):
+                    self._log_ipc_error_debounced("positions_total")
+                    if self._try_reconnect():
+                        count = mt5.positions_total()
             return count if count is not None else 0
         except Exception as e:
             logger.warning(f"get_open_positions_count Fehler: {e}")
@@ -557,6 +609,12 @@ class MT5Connector:
             return 0.0
         try:
             tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                err = mt5.last_error()
+                if err and self._is_ipc_error(err[0]):
+                    self._log_ipc_error_debounced(symbol)
+                    if self._try_reconnect():
+                        tick = mt5.symbol_info_tick(symbol)
             info = mt5.symbol_info(symbol)
             if tick is None or info is None:
                 return 0.0
@@ -580,11 +638,96 @@ class MT5Connector:
             date_to = datetime.now(timezone.utc)
             deals = mt5.history_deals_get(date_from, date_to)
             if deals is None:
-                return 0.0
+                err = mt5.last_error()
+                if err and self._is_ipc_error(err[0]):
+                    self._log_ipc_error_debounced("history_deals_get")
+                    if self._try_reconnect():
+                        deals = mt5.history_deals_get(date_from, date_to)
+                if deals is None:
+                    return 0.0
             return sum(d.profit for d in deals)
         except Exception as e:
             logger.warning(f"MT5-History P&L Fehler: {e}")
             return 0.0
+
+    def _get_common_files_path(self) -> Path:
+        """Ermittelt MT5 Common Files Pfad automatisch wenn nicht konfiguriert."""
+        cfg = self.config
+        if cfg is None:
+            try:
+                from config import config as app_config
+                cfg = app_config
+            except ImportError:
+                pass
+
+        configured = getattr(cfg, "mt5_common_files_path", "") if cfg else ""
+        if configured:
+            return Path(configured)
+
+        # Windows-Standard-Pfad via APPDATA
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            default = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+            if default.exists():
+                logger.info(f"[MT5] Common Files Pfad auto-erkannt: {default}")
+                return default
+
+        # Fallback: Output-Verzeichnis des Projekts
+        output = Path(getattr(cfg, "output_dir", "Output")) if cfg else Path("Output")
+        output.mkdir(exist_ok=True)
+        logger.info(f"[MT5] Common Files Pfad: Output-Verzeichnis {output}")
+        return output
+
+    def diagnose(self) -> dict:
+        """Gibt Diagnose-Infos für Troubleshooting aus."""
+        common_path = self._get_common_files_path()
+        autotrading: Optional[bool] = None
+        if self._connected and MT5_AVAILABLE:
+            try:
+                terminal = mt5.terminal_info()
+                autotrading = bool(terminal.trade_allowed) if terminal else None
+            except Exception:
+                pass
+
+        info = {
+            "mt5_connected": self._connected,
+            "common_files_path": str(common_path),
+            "common_files_path_exists": common_path.exists(),
+            "autotrading_available": autotrading,
+        }
+        for key, val in info.items():
+            logger.info(f"[MT5 Diagnose] {key}: {val}")
+        return info
+
+    def _is_ipc_error(self, error_code: int) -> bool:
+        """Prüft ob Fehler ein IPC-Verbindungsfehler ist."""
+        return error_code in (-10001, -10002, -10003)
+
+    def _try_reconnect(self) -> bool:
+        """Versucht MT5-Verbindung wiederherzustellen. Max 3 Versuche."""
+        for attempt in range(1, 4):
+            logger.warning(f"[MT5] Verbindung verloren – Reconnect-Versuch {attempt}/3...")
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(2)
+            if self.connect():
+                logger.info(f"[MT5] Reconnect erfolgreich (Versuch {attempt})")
+                return True
+            logger.warning(f"[MT5] Reconnect {attempt} fehlgeschlagen")
+        logger.error("[MT5] Reconnect fehlgeschlagen nach 3 Versuchen – bitte MT5 prüfen")
+        self._connected = False
+        return False
+
+    def _log_ipc_error_debounced(self, symbol: str) -> None:
+        """Loggt IPC-Fehler maximal einmal pro Minute (verhindert Log-Spam bei vielen Symbolen)."""
+        now = datetime.now()
+        if self._last_ipc_log is None or (now - self._last_ipc_log).seconds > 60:
+            logger.error(
+                f"[MT5] IPC-Verbindungsfehler (erstes Symbol: {symbol}) – versuche Reconnect"
+            )
+            self._last_ipc_log = now
 
     def _require_connection(self) -> None:
         if not self._connected:

@@ -371,23 +371,28 @@ class Orchestrator:
 
     def _run_scanner(self) -> None:
         """Führt einen Scanner-Lauf durch und aktualisiert active_symbols.
-        Fallback auf config.all_symbols wenn Scanner deaktiviert oder scan() leer zurückgibt.
+        Fallback auf config.fallback_symbols wenn Scanner deaktiviert oder scan() leer zurückgibt.
         """
         if self.scanner_agent is None:
             self.active_symbols = list(getattr(self.config, "all_symbols", []))
             return
         try:
+            logger.info("[Orchestrator] Scanner: Lade Symbole...")
             previous = list(self.active_symbols)
             results = self.scanner_agent.scan()
             if results:
                 self.active_symbols = results
                 self.scanner_agent.log_watchlist(previous if previous else None)
-                logger.info(f"[Scanner] {len(self.active_symbols)} aktive Symbole nach Scan")
+                top_str = ", ".join(self.active_symbols[:5])
+                logger.info(
+                    f"[Scanner] {len(self.active_symbols)} ausgewählt: {top_str}"
+                    + (" ..." if len(self.active_symbols) > 5 else "")
+                )
             else:
                 self.active_symbols = list(getattr(self.config, "all_symbols", []))
-                logger.info(f"[Scanner] scan() leer – Fallback auf {len(self.active_symbols)} config-Symbole")
+                logger.info(f"[Scanner] scan() leer – Fallback auf {len(self.active_symbols)} Fallback-Symbole")
         except Exception as e:
-            logger.warning(f"[Scanner] Scan fehlgeschlagen – Fallback auf config.all_symbols: {e}")
+            logger.warning(f"[Scanner] Scan fehlgeschlagen – Fallback auf config.fallback_symbols: {e}")
             if not self.active_symbols:
                 self.active_symbols = list(getattr(self.config, "all_symbols", []))
 

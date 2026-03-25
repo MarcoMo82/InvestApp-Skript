@@ -52,9 +52,11 @@ def build_connector():
                 password=config.mt5_password,
                 server=config.mt5_server,
                 path=config.mt5_path,
+                config=config,
             )
             if connector.connect():
                 logger.info("MT5-Connector aktiv.")
+                connector.diagnose()
                 return connector
             else:
                 logger.warning("MT5-Verbindung fehlgeschlagen – Fallback auf yfinance.")
