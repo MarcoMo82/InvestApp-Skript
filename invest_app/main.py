@@ -70,15 +70,15 @@ def build_connector():
     return connector
 
 
-def build_scanner(connector, order_db=None):
+def build_scanner(connector, symbol_provider=None):
     """Baut den ScannerAgent auf wenn aktiviert."""
     if not config.scanner_enabled:
         return None
     from agents.scanner_agent import ScannerAgent
-    return ScannerAgent(config=config, connector=connector, order_db=order_db)
+    return ScannerAgent(config=config, connector=connector, symbol_provider=symbol_provider)
 
 
-def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: NewsFetcher):
+def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: NewsFetcher, order_db=None, symbol_provider=None):
     """Baut die vollständige Agent-Pipeline auf."""
     from agents.orchestrator import Orchestrator
     from agents.macro_agent import MacroAgent
@@ -98,10 +98,11 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
 
     chart_exporter = ChartExporter(config=config)
 
-    # Order-Datenbank initialisieren
-    order_db_path = Path(config.output_dir).parent / "data" / "orders.db"
-    order_db = OrderDB(db_path=order_db_path)
-    logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
+    # Order-Datenbank initialisieren (falls nicht von außen übergeben)
+    if order_db is None:
+        order_db_path = Path(config.output_dir).parent / "data" / "orders.db"
+        order_db = OrderDB(db_path=order_db_path)
+        logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
 
     # Simulation Agent (optional, nur wenn aktiviert)
     simulation_agent = None
@@ -158,7 +159,7 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         learning_agent=learning_agent,
         watch_agent=watch_agent,
         chart_exporter=chart_exporter,
-        scanner_agent=build_scanner(connector, order_db),
+        scanner_agent=build_scanner(connector, symbol_provider),
     )
 
 
@@ -188,8 +189,32 @@ def main() -> None:
     # Connector aufbauen (MT5 oder yfinance)
     connector = build_connector()
 
+    # OrderDB früh initialisieren (wird von SymbolProvider für Crash-Recovery benötigt)
+    from data.order_db import OrderDB
+    from data.symbol_provider import SymbolProvider, SymbolProviderError
+    order_db_path = Path(config.output_dir).parent / "data" / "orders.db"
+    order_db = OrderDB(db_path=order_db_path)
+    logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
+
+    # SymbolProvider initialisieren und Start-Validierung
+    symbol_provider = SymbolProvider(config=config, order_db=order_db)
+    try:
+        initial_symbols = symbol_provider.get_symbols()
+        logger.info(f"[Init] SymbolProvider OK – {len(initial_symbols)} Symbole verfügbar")
+    except SymbolProviderError as e:
+        logger.critical(f"[Init] SymbolProviderError: {e}")
+        print()
+        print("=" * 60)
+        print("FATAL: MT5 EA nicht erreichbar. Bitte sicherstellen dass:")
+        print("  1. MetaTrader 5 läuft")
+        print("  2. InvestApp_Zones.mq5 auf einem Chart aktiv ist")
+        print("  3. Der EA mindestens einen Initialisierungszyklus abgeschlossen hat")
+        print("System wird beendet.")
+        print("=" * 60)
+        sys.exit(1)
+
     # Orchestrator aufbauen
-    orchestrator = build_orchestrator(connector, db, claude, news)
+    orchestrator = build_orchestrator(connector, db, claude, news, order_db=order_db, symbol_provider=symbol_provider)
 
     # Graceful Shutdown via SIGINT / SIGTERM
     def shutdown(signum, frame):

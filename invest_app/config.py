@@ -26,6 +26,7 @@ _SECTIONS: dict[str, list[str]] = {
         "scanner_enabled", "scanner_max_symbols", "scanner_min_score", "scanner_top_n",
         "scanner_respect_category_limits", "scanner_interval_minutes",
         "scanner_categories", "scanner_category_limits",
+        "symbol_provider_max_file_age_minutes",
     ],
     "risk": [
         "risk_per_trade", "max_daily_loss", "max_open_positions", "min_crv",
@@ -113,6 +114,7 @@ class Config:
         "scanner_interval_minutes": 60,
         "scanner_categories": ["forex", "indices", "commodities"],
         "scanner_category_limits": {"forex": 5, "indices": 3, "commodities": 2, "crypto": 0},
+        "symbol_provider_max_file_age_minutes": 5,
         # risk
         "risk_per_trade": 0.01,
         "max_daily_loss": 0.03,

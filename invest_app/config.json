@@ -43,7 +43,8 @@
       "indices": 3,
       "commodities": 2,
       "crypto": 0
-    }
+    },
+    "symbol_provider_max_file_age_minutes": 5
   },
   "risk": {
     "risk_per_trade": 0.01,
