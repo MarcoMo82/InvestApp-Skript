@@ -49,6 +49,7 @@
   "risk": {
     "risk_per_trade": 0.01,
     "max_daily_loss": 0.03,
+    "drawdown_enabled": false,
     "max_open_positions": 3,
     "min_crv": 2.0,
     "atr_period": 14,
