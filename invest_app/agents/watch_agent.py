@@ -46,6 +46,7 @@ class WatchAgent:
         self._pending_signals: list[dict] = []
         self._lock = threading.Lock()
         self._last_sync_ts: float = 0.0   # Letzter MT5-Sync Timestamp
+        self._sync_counter: int = 0        # Zähler für 15s-Ticks (Sync alle 4 Ticks = 60s)
 
     def add_pending_signal(self, signal_dict: dict) -> None:
         """Fügt ein freigegebenes Signal zur Überwachungsliste hinzu."""
@@ -56,20 +57,28 @@ class WatchAgent:
         logger.info(f"Signal zur Überwachung hinzugefügt: {signal_dict.get('instrument')}")
 
     def run_watch_cycle(self) -> list[dict]:
-        """Hauptmethode – jede Minute aufrufen. Alias für check_and_execute."""
-        logger.info(
-            f"[Watch-Agent] ♦ Minuten-Check | "
-            f"Pending Signals: {self.pending_count} | "
-            f"Zeit: {datetime.now(timezone.utc).strftime('%H:%M:%S')}"
-        )
+        """Hauptmethode – alle 15 Sekunden aufrufen."""
+        self._sync_counter += 1
+        do_full_sync = (self._sync_counter % 4 == 0)  # Alle 60s (4 × 15s)
+
         result = self.check_and_execute()
 
-        # MT5-Positionen mit Datenbank synchronisieren
-        self.sync_positions_from_mt5()
+        # MT5-Positionen nur alle 60s synchronisieren
+        if do_full_sync:
+            self.sync_positions_from_mt5()
 
-        # Status in Konsole ausgeben
-        if self.order_db is not None:
+        # Status nur alle 60s in Konsole ausgeben
+        if do_full_sync and self.order_db is not None:
             print(self.order_db.format_status())
+
+        # Log nur bei Aktivität oder alle 60s
+        if result or do_full_sync:
+            logger.info(
+                f"[Watch-Agent] ♦ 15s-Check | "
+                f"Pending: {self.pending_count} | "
+                f"Ausgeführt: {len(result)} | "
+                f"Zeit: {datetime.now(timezone.utc).strftime('%H:%M:%S')}"
+            )
 
         # Zonen für alle Symbole aktualisieren
         if self.chart_exporter and getattr(self._config, "watch_agent_zone_update_enabled", True):

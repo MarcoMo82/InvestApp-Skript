@@ -70,12 +70,12 @@ def build_connector():
     return connector
 
 
-def build_scanner(connector):
+def build_scanner(connector, order_db=None):
     """Baut den ScannerAgent auf wenn aktiviert."""
     if not config.scanner_enabled:
         return None
     from agents.scanner_agent import ScannerAgent
-    return ScannerAgent(config=config, connector=connector)
+    return ScannerAgent(config=config, connector=connector, order_db=order_db)
 
 
 def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: NewsFetcher):
@@ -158,7 +158,7 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         learning_agent=learning_agent,
         watch_agent=watch_agent,
         chart_exporter=chart_exporter,
-        scanner_agent=build_scanner(connector),
+        scanner_agent=build_scanner(connector, order_db),
     )
 
 

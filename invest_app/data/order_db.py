@@ -52,6 +52,15 @@ class OrderDB:
                 CREATE INDEX IF NOT EXISTS idx_orders_symbol  ON orders(symbol);
                 CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
                 CREATE INDEX IF NOT EXISTS idx_orders_ticket  ON orders(ticket);
+
+                CREATE TABLE IF NOT EXISTS symbols (
+                    symbol      TEXT PRIMARY KEY,
+                    category    TEXT,               -- forex/crypto/stock
+                    score       REAL DEFAULT 0,
+                    active      INTEGER DEFAULT 1,  -- 1=aktiv, 0=inaktiv
+                    last_seen   REAL,               -- Unix-Timestamp letzter Scanner-Lauf
+                    updated_at  REAL
+                );
             """)
 
     def _connect(self) -> sqlite3.Connection:
@@ -216,6 +225,49 @@ class OrderDB:
                 "SELECT ticket FROM orders WHERE status IN ('open','pending') AND ticket IS NOT NULL"
             ).fetchall()
             return {r[0] for r in rows}
+
+    # ------------------------------------------------------------------
+    # Symbol-Persistenz
+    # ------------------------------------------------------------------
+
+    def save_symbols(self, symbols: list[dict]) -> None:
+        """Speichert/aktualisiert Symbol-Liste (upsert), setzt last_seen auf jetzt."""
+        now = datetime.utcnow().timestamp()
+        with self._lock, self._connect() as conn:
+            for sym in symbols:
+                conn.execute(
+                    """
+                    INSERT INTO symbols (symbol, category, score, active, last_seen, updated_at)
+                    VALUES (?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        category=excluded.category,
+                        score=excluded.score,
+                        active=1,
+                        last_seen=excluded.last_seen,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        sym["symbol"],
+                        sym.get("category", "other"),
+                        sym.get("score", 0.0),
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_active_symbols(self) -> list[str]:
+        """Gibt aktive Symbole zurück, sortiert nach score DESC."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol FROM symbols WHERE active=1 ORDER BY score DESC"
+            ).fetchall()
+            return [r[0] for r in rows]
+
+    def get_symbol_count(self) -> int:
+        """Anzahl aller gespeicherten Symbole."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()
+            return row[0]
 
     # ------------------------------------------------------------------
     # Status-Anzeige

@@ -12,9 +12,10 @@ from typing import Any
 class ScannerAgent:
     """Scannt MT5-Symbole und wählt Top-N nach Handelspotenzial."""
 
-    def __init__(self, config: Any, connector: Any) -> None:
+    def __init__(self, config: Any, connector: Any, order_db: Any = None) -> None:
         self.config = config
         self.connector = connector
+        self.order_db = order_db
         self.active_symbols: list[str] = []
         self.logger = logging.getLogger(__name__)
 
@@ -34,6 +35,19 @@ class ScannerAgent:
             f"[Scanner] {len(candidates)} gescannt, {len(scored)} gescort, "
             f"{len(self.active_symbols)} ausgewählt, {cat_excluded} durch Kategorie-Limit aussortiert"
         )
+
+        # Symbol-Persistenz: scored Liste in DB speichern
+        if self.order_db is not None and scored:
+            try:
+                sym_data = [
+                    {"symbol": s, "category": self._get_category(s), "score": score}
+                    for s, score, _ in scored
+                ]
+                self.order_db.save_symbols(sym_data)
+                self.logger.info(f"[Scanner] {len(sym_data)} Symbole in DB persistiert")
+            except Exception as e:
+                self.logger.warning(f"[Scanner] DB-Speicherung fehlgeschlagen: {e}")
+
         return self.active_symbols
 
     def _get_broker_symbols(self) -> list[str]:
@@ -231,6 +245,17 @@ class ScannerAgent:
             else:
                 cat_excluded += 1
         return selected, cat_excluded
+
+    def load_from_db(self, order_db: Any) -> list[str]:
+        """Lädt Symbole aus DB als Fallback wenn available_symbols.json fehlt."""
+        try:
+            symbols = order_db.get_active_symbols()
+            if symbols:
+                self.logger.info(f"[Scanner] {len(symbols)} Symbole aus DB geladen (Fallback)")
+            return symbols
+        except Exception as e:
+            self.logger.warning(f"[Scanner] DB-Laden fehlgeschlagen: {e}")
+            return []
 
     def log_watchlist(self, previous: list[str] | None = None) -> None:
         """Loggt die aktuelle Watchlist mit Änderungen gegenüber vorheriger."""
