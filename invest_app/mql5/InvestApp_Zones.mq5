@@ -587,6 +587,22 @@ void CheckPendingOrder()
    // Nur "pending" ausführen
    if(StringFind(content, "\"pending\"") < 0) return;
 
+   // Alters-Check: Order älter als 30 Sekunden → ignorieren und auf "expired" setzen
+   double created_at = ParseJsonDouble(content, "created_at");
+   if(created_at > 0 && (double)TimeCurrent() - created_at > 30.0)
+   {
+      Print("InvestApp: pending_order.json veraltet (>30s) – setze Status 'expired' und ignoriere Order");
+      string expired_content = content;
+      StringReplace(expired_content, "\"pending\"", "\"expired\"");
+      int fh_exp = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_COMMON);
+      if(fh_exp != INVALID_HANDLE)
+      {
+         FileWriteString(fh_exp, expired_content);
+         FileClose(fh_exp);
+      }
+      return;
+   }
+
    string symbol    = ParseJsonString(content, "symbol");
    string direction = ParseJsonString(content, "direction");
    double volume    = ParseJsonDouble(content, "volume");
@@ -598,12 +614,13 @@ void CheckPendingOrder()
    MqlTradeRequest request = {};
    MqlTradeResult  result  = {};
 
-   request.action    = TRADE_ACTION_DEAL;
-   request.symbol    = symbol;
-   request.volume    = volume;
-   request.type      = (direction == "buy") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   request.price     = (direction == "buy") ? SymbolInfoDouble(symbol, SYMBOL_ASK)
-                                            : SymbolInfoDouble(symbol, SYMBOL_BID);
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol       = symbol;
+   request.volume       = volume;
+   request.type         = (direction == "buy") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.type_filling = ORDER_FILLING_IOC;
+   request.price        = (direction == "buy") ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+                                               : SymbolInfoDouble(symbol, SYMBOL_BID);
    request.sl        = sl;
    request.tp        = tp;
    request.deviation = 10;

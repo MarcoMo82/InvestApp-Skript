@@ -230,6 +230,7 @@ class MT5Connector:
     def write_order_file(self, signal: dict) -> bool:
         """Schreibt Order in pending_order.json für MQL5 EA."""
         order = {
+            "created_at": time.time(),
             "timestamp": time.time(),
             "symbol": signal.get("symbol"),
             "direction": signal.get("direction"),
@@ -266,6 +267,18 @@ class MT5Connector:
             except Exception:
                 pass
             time.sleep(0.2)
+        # Timeout: Datei auf "expired" setzen, damit EA sie nicht nochmal ausführt
+        logger.warning(
+            "[mt5_connector] Timeout: EA hat nicht geantwortet – setze pending_order.json auf 'expired'"
+        )
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            data["status"] = "expired"
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[mt5_connector] Konnte Status nicht auf 'expired' setzen: {e}")
         return {"status": "timeout", "error": "EA hat nicht geantwortet"}
 
     def close_position(self, ticket: int, lot_size: Optional[float] = None) -> bool:

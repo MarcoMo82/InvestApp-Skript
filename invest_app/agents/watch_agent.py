@@ -7,6 +7,7 @@ Prüft Entry-Bedingungen auf dem 1m-Chart bevor eine Order platziert wird.
 from __future__ import annotations
 
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -43,6 +44,8 @@ class WatchAgent:
 
     def add_pending_signal(self, signal_dict: dict) -> None:
         """Fügt ein freigegebenes Signal zur Überwachungsliste hinzu."""
+        if "_signal_id" not in signal_dict:
+            signal_dict["_signal_id"] = str(uuid.uuid4())
         with self._lock:
             self._pending_signals.append(signal_dict)
         logger.info(f"Signal zur Überwachung hinzugefügt: {signal_dict.get('instrument')}")
@@ -83,7 +86,7 @@ class WatchAgent:
             Liste der ausgeführten Signale
         """
         executed: list[dict] = []
-        remaining: list[dict] = []
+        discarded: list[dict] = []
 
         with self._lock:
             signals = list(self._pending_signals)
@@ -93,21 +96,34 @@ class WatchAgent:
             try:
                 ohlcv_1m = self.connector.get_ohlcv(instrument, "1m", 30)
                 if ohlcv_1m is None or ohlcv_1m.empty:
-                    remaining.append(signal)
-                    continue
+                    continue  # bleibt in _pending_signals
 
                 if self._check_entry_condition(signal, ohlcv_1m):
-                    self._place_order(signal)
-                    executed.append(signal)
-                    logger.info(f"Order ausgeführt: {instrument}")
-                else:
-                    remaining.append(signal)
+                    ticket = self._place_order(signal)
+                    if ticket is not None:
+                        executed.append(signal)
+                        logger.info(f"Order ausgeführt: {instrument}")
+                    else:
+                        attempt = signal.get("_retry_count", 0) + 1
+                        signal["_retry_count"] = attempt
+                        logger.error(f"Order fehlgeschlagen, Retry {attempt}/3: {instrument}")
+                        if attempt >= 3:
+                            logger.error(f"Order nach 3 Versuchen verworfen: {instrument}")
+                            discarded.append(signal)
+                        # else: bleibt in _pending_signals für nächsten Versuch
+                # else: Bedingung nicht erfüllt → bleibt in _pending_signals
             except Exception as e:
                 logger.error(f"Fehler bei Signal-Prüfung {instrument}: {e}")
-                remaining.append(signal)
+                # bleibt in _pending_signals
 
         with self._lock:
-            self._pending_signals = remaining
+            # Nur ausgeführte und endgültig verworfene Signale entfernen.
+            # Neu hinzugefügte Signale (während der Verarbeitung) bleiben erhalten.
+            done_ids = {s.get("_signal_id") for s in executed + discarded}
+            self._pending_signals = [
+                s for s in self._pending_signals
+                if s.get("_signal_id") not in done_ids
+            ]
 
         open_trade_count = 0
         sl_updates = 0
@@ -333,18 +349,42 @@ class WatchAgent:
         except Exception as e:
             logger.debug(f"[Watch-Agent] Zone-Update Fehler {symbol}: {e}")
 
-    def _place_order(self, signal: dict) -> dict:
-        """Platziert eine Order über den Connector und speichert in der DB."""
+    def _place_order(self, signal: dict) -> Optional[int]:
+        """Platziert eine Market-Order über den Connector und speichert in der DB.
+
+        Returns:
+            Ticket-Nummer bei Erfolg, None bei Fehler.
+        """
         try:
-            result: dict = {}
-            if hasattr(self.connector, "place_order"):
-                result = self.connector.place_order(signal) or {}
-            if self.db is not None:
-                self.db.save_trade(signal)
-            return result
+            symbol = signal.get("instrument", "")
+            direction = signal.get("direction", "long")
+            lot_size = signal.get("lot_size", 0.01)
+            stop_loss = signal.get("stop_loss")
+            take_profit = signal.get("take_profit")
+
+            ticket = None
+            if hasattr(self.connector, "place_market_order"):
+                ticket = self.connector.place_market_order(
+                    symbol=symbol,
+                    direction=direction,
+                    lot_size=lot_size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+            else:
+                logger.warning(
+                    f"[Watch-Agent] place_market_order nicht verfügbar – Order für {symbol} übersprungen"
+                )
+
+            if ticket is not None:
+                if self.db is not None:
+                    self.db.save_trade(signal)
+                return ticket
+
+            return None
         except Exception as e:
             logger.error(f"Order-Platzierung fehlgeschlagen: {e}")
-            return {}
+            return None
 
     def _execute_order(self, signal: dict) -> bool:
         """

@@ -292,3 +292,72 @@ class TestCheckAndExecute:
         executed = agent.check_and_execute()
         assert len(executed) == 0
         assert agent.pending_count == 1
+
+    def test_failed_order_increments_retry_count(self):
+        """Schlägt place_market_order fehl → _retry_count wird hochgezählt, Signal bleibt pending."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+        connector.place_market_order = MagicMock(return_value=None)  # Fehler simulieren
+        agent = WatchAgent(connector=connector)
+        signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal)
+
+        executed = agent.check_and_execute()
+
+        assert len(executed) == 0
+        assert agent.pending_count == 1
+        assert signal.get("_retry_count") == 1
+
+    def test_signal_discarded_after_three_failed_retries(self):
+        """Nach 3 fehlgeschlagenen Versuchen wird Signal verworfen und aus Pending entfernt."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+        connector.place_market_order = MagicMock(return_value=None)
+        agent = WatchAgent(connector=connector)
+        signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal)
+
+        # 3 Versuche durchlaufen
+        for _ in range(3):
+            agent.check_and_execute()
+
+        assert agent.pending_count == 0
+        assert signal.get("_retry_count") == 3
+
+    def test_signal_id_assigned_on_add(self):
+        """add_pending_signal weist eindeutige _signal_id zu."""
+        agent = WatchAgent(connector=_make_connector())
+        s1 = {"instrument": "EURUSD", "entry_type": "market"}
+        s2 = {"instrument": "GBPUSD", "entry_type": "market"}
+        agent.add_pending_signal(s1)
+        agent.add_pending_signal(s2)
+        assert "_signal_id" in s1
+        assert "_signal_id" in s2
+        assert s1["_signal_id"] != s2["_signal_id"]
+
+    def test_race_condition_new_signals_preserved_during_execution(self):
+        """Neu hinzugefügte Signale während check_and_execute() werden nicht überschrieben."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+        connector.place_market_order = MagicMock(return_value=12345)
+        agent = WatchAgent(connector=connector)
+
+        signal_a = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal_a)
+
+        # Neues Signal wird während der Ausführung extern hinzugefügt
+        signal_b = {"instrument": "GBPUSD", "entry_type": "breakout", "entry_price": 9999.0}
+
+        original_place = agent._place_order
+
+        def place_and_inject(sig):
+            ticket = original_place(sig)
+            agent.add_pending_signal(signal_b)  # Concurrent-Add simulieren
+            return ticket
+
+        agent._place_order = place_and_inject
+
+        executed = agent.check_and_execute()
+
+        assert len(executed) == 1
+        assert agent.pending_count == 1  # signal_b muss erhalten bleiben
