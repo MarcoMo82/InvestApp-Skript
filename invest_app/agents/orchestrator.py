@@ -107,7 +107,7 @@ class Orchestrator:
             logger.debug("Neuer Tag – Daily-Loss-Flag zurückgesetzt.")
 
         # P1.2: Daily Drawdown Check
-        if not self._check_daily_drawdown():
+        if getattr(self.config, "drawdown_enabled", True) and not self._check_daily_drawdown():
             logger.warning("Daily Drawdown Limit erreicht – kein weiteres Trading heute")
             return []
 

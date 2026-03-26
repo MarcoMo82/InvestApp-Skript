@@ -9,20 +9,20 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 class OrderDB:
     """Thread-sicheres SQLite Order-Tracking."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: "Union[str, Path]"):
         self.db_path = Path(str(db_path))
         self._in_memory = str(db_path) == ":memory:"
         if not self._in_memory:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         # Für :memory: eine persistente shared connection halten
-        self._shared_conn: sqlite3.Connection | None = (
+        self._shared_conn: Optional[sqlite3.Connection] = (
             sqlite3.connect(":memory:", check_same_thread=False)
             if self._in_memory else None
         )

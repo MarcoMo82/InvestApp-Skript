@@ -71,10 +71,14 @@ def _make_orchestrator(config, connector, mock_db):
         m.run.return_value = return_value
         return m
 
+    macro_mock = _agent_mock({"trading_allowed": True, "macro_bias": "bullish", "event_risk": "low"})
+    macro_mock.check_news_block.return_value = (False, "")
+    macro_mock.get_risk_sentiment.return_value = "neutral"
+
     orch = Orchestrator(
         config=config,
         connector=connector,
-        macro_agent=_agent_mock({"trading_allowed": True, "macro_bias": "bullish", "event_risk": "low"}),
+        macro_agent=macro_mock,
         trend_agent=_agent_mock({"direction": "long", "structure_status": "bullish intact"}),
         volatility_agent=_agent_mock({"setup_allowed": True, "atr_value": 0.0015}),
         level_agent=_agent_mock({"nearest_level": 1.1000}),

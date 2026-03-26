@@ -127,9 +127,10 @@ def test_min_score_filters_low_scoring_symbols():
 def test_scan_fallback_to_config_symbols():
     cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols.return_value = []
     connector.get_ohlcv.return_value = None
-    agent = ScannerAgent(cfg, connector)
+    symbol_provider = MagicMock()
+    symbol_provider.get_symbols.return_value = ["EURUSD", "GBPUSD"]
+    agent = ScannerAgent(cfg, connector, symbol_provider=symbol_provider)
     result = agent.scan()
     assert isinstance(result, list)
 
@@ -137,9 +138,10 @@ def test_scan_fallback_to_config_symbols():
 def test_scan_uses_broker_symbols_if_available():
     cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols.return_value = ["EURUSD", "GBPUSD", "GER40"]
     connector.get_ohlcv.return_value = None
-    agent = ScannerAgent(cfg, connector)
+    symbol_provider = MagicMock()
+    symbol_provider.get_symbols.return_value = ["EURUSD", "GBPUSD", "GER40"]
+    agent = ScannerAgent(cfg, connector, symbol_provider=symbol_provider)
     result = agent.scan()
     assert isinstance(result, list)
 
@@ -169,9 +171,10 @@ def test_score_returns_breakdown_dict():
 def test_active_symbols_updated_after_scan():
     cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols.return_value = []
     connector.get_ohlcv.return_value = None
-    agent = ScannerAgent(cfg, connector)
+    symbol_provider = MagicMock()
+    symbol_provider.get_symbols.return_value = ["EURUSD", "GBPUSD"]
+    agent = ScannerAgent(cfg, connector, symbol_provider=symbol_provider)
     assert agent.active_symbols == []
     agent.scan()
     assert isinstance(agent.active_symbols, list)
@@ -221,34 +224,33 @@ def test_cat_excluded_count_returned():
 
 
 def test_get_broker_symbols_from_file():
-    """Wenn get_symbols_from_file() Symbole zurückgibt, wird Fallback nicht genutzt."""
-    cfg = make_config(fallback_symbols=["EURUSD", "GBPUSD"])
+    """_get_broker_symbols delegiert an SymbolProvider.get_symbols()."""
+    cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols_from_file.return_value = ["EURUSD", "GBPUSD", "GER40", "XAUUSD"]
-    connector.get_symbols.return_value = []
-    agent = ScannerAgent(cfg, connector)
+    symbol_provider = MagicMock()
+    symbol_provider.get_symbols.return_value = ["EURUSD", "GBPUSD", "GER40", "XAUUSD"]
+    agent = ScannerAgent(cfg, connector, symbol_provider=symbol_provider)
     result = agent._get_broker_symbols()
     assert result == ["EURUSD", "GBPUSD", "GER40", "XAUUSD"]
-    connector.get_symbols.assert_not_called()
+    symbol_provider.get_symbols.assert_called_once()
 
 
 def test_get_broker_symbols_api_fallback():
-    """Wenn Datei leer, wird MT5 API genutzt."""
-    cfg = make_config(fallback_symbols=["EURUSD"])
+    """_get_broker_symbols gibt SymbolProvider-Ergebnis zurück."""
+    cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols_from_file.return_value = []
-    connector.get_symbols.return_value = ["EURUSD", "GBPUSD", "USDJPY"]
-    agent = ScannerAgent(cfg, connector)
+    symbol_provider = MagicMock()
+    symbol_provider.get_symbols.return_value = ["EURUSD", "GBPUSD", "USDJPY"]
+    agent = ScannerAgent(cfg, connector, symbol_provider=symbol_provider)
     result = agent._get_broker_symbols()
     assert result == ["EURUSD", "GBPUSD", "USDJPY"]
 
 
 def test_get_broker_symbols_fallback_config():
-    """Wenn Datei fehlt und API leer, wird fallback_symbols genutzt."""
-    cfg = make_config(fallback_symbols=["EURUSD", "XAUUSD", "BTCUSD"])
+    """Wenn SymbolProvider None → SymbolProviderError wird propagiert."""
+    from data.symbol_provider import SymbolProviderError
+    cfg = make_config()
     connector = MagicMock()
-    connector.get_symbols_from_file.return_value = []
-    connector.get_symbols.return_value = []
-    agent = ScannerAgent(cfg, connector)
-    result = agent._get_broker_symbols()
-    assert result == ["EURUSD", "XAUUSD", "BTCUSD"]
+    agent = ScannerAgent(cfg, connector)  # kein symbol_provider
+    with pytest.raises(SymbolProviderError):
+        agent._get_broker_symbols()

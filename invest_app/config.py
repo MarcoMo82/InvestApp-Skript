@@ -31,7 +31,7 @@ _SECTIONS: dict[str, list[str]] = {
     "risk": [
         "risk_per_trade", "max_daily_loss", "max_open_positions", "min_crv",
         "atr_period", "atr_sl_multiplier", "atr_tp_multiplier", "min_confidence_score",
-        "spread_filter_multiplier", "normal_spread_pips",
+        "spread_filter_multiplier", "normal_spread_pips", "drawdown_enabled",
     ],
     "sessions": [
         "london_open_hour", "london_close_hour", "ny_open_hour", "ny_close_hour",
@@ -116,6 +116,7 @@ class Config:
         "scanner_category_limits": {"forex": 5, "indices": 3, "commodities": 2, "crypto": 0},
         "symbol_provider_max_file_age_minutes": 5,
         # risk
+        "drawdown_enabled": True,
         "risk_per_trade": 0.01,
         "max_daily_loss": 0.03,
         "max_open_positions": 3,
