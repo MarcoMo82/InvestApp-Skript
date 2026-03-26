@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from agents.macro_agent import MacroAgent
+from agents.macro_agent import MacroAgent, SAFE_HAVEN_SYMBOLS
 from agents.trend_agent import TrendAgent
 from agents.volatility_agent import VolatilityAgent
 from agents.level_agent import LevelAgent
@@ -26,6 +26,8 @@ from models.signal import Signal, SignalStatus, Direction
 from models.trade import Trade
 from utils.logger import get_logger
 from utils.database import Database
+from utils.correlation import has_correlated_open_position
+from utils.session import get_current_session, is_trend_trading_allowed, get_session_bonus
 
 if TYPE_CHECKING:
     from agents.watch_agent import WatchAgent
@@ -109,13 +111,37 @@ class Orchestrator:
             logger.warning("Daily Drawdown Limit erreicht – kein weiteres Trading heute")
             return []
 
-        # P1.1: Offene Positionen einmalig pro Zyklus zählen
+        # P1.1 + P2.1: Offene Positionen einmalig pro Zyklus ermitteln
         open_positions = 0
-        if hasattr(self.connector, "get_open_positions_count"):
+        open_symbols: list[str] = []
+        if hasattr(self.connector, "get_open_positions"):
+            try:
+                positions = self.connector.get_open_positions()
+                open_positions = len(positions)
+                open_symbols = [p.get("symbol", "") for p in positions if p.get("symbol")]
+            except Exception as e:
+                logger.debug(f"get_open_positions Fehler: {e}")
+                if hasattr(self.connector, "get_open_positions_count"):
+                    try:
+                        open_positions = self.connector.get_open_positions_count()
+                    except Exception as e2:
+                        logger.debug(f"get_open_positions_count Fehler: {e2}")
+        elif hasattr(self.connector, "get_open_positions_count"):
             try:
                 open_positions = self.connector.get_open_positions_count()
             except Exception as e:
                 logger.debug(f"get_open_positions_count Fehler: {e}")
+
+        # P2.3: Risk-Sentiment einmalig pro Zyklus ermitteln
+        risk_sentiment = "neutral"
+        if getattr(self.config, "safe_haven_enabled", True):
+            try:
+                vix_threshold = float(getattr(self.config, "vix_risk_off_threshold", 20.0))
+                risk_sentiment = self.macro_agent.get_risk_sentiment(vix_threshold)
+                if risk_sentiment != "neutral":
+                    logger.info(f"Risk-Sentiment: {risk_sentiment}")
+            except Exception as e:
+                logger.debug(f"Risk-Sentiment Fehler: {e}")
 
         self._cycle_count += 1
         cycle_id = f"cycle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{self._cycle_count}"
@@ -133,7 +159,12 @@ class Orchestrator:
 
         for symbol in symbols:
             try:
-                signal = self._analyze_symbol(symbol, open_positions=open_positions)
+                signal = self._analyze_symbol(
+                    symbol,
+                    open_positions=open_positions,
+                    open_symbols=open_symbols,
+                    risk_sentiment=risk_sentiment,
+                )
                 if signal:
                     all_signals.append(signal)
                     self.db.save_signal(signal)
@@ -185,7 +216,13 @@ class Orchestrator:
         )
         return all_signals
 
-    def _analyze_symbol(self, symbol: str, open_positions: int = 0) -> Optional[Signal]:
+    def _analyze_symbol(
+        self,
+        symbol: str,
+        open_positions: int = 0,
+        open_symbols: Optional[list] = None,
+        risk_sentiment: str = "neutral",
+    ) -> Optional[Signal]:
         """Führt die vollständige Agent-Pipeline für ein Symbol aus."""
         logger.debug(f"Analysiere {symbol} ...")
 
@@ -210,11 +247,42 @@ class Orchestrator:
             logger.debug(f"{symbol}: Makro-Freigabe verweigert")
             return self._build_rejected_signal(symbol, "neutral", macro_result, {}, {}, {}, {}, {}, {})
 
+        # P1.4: News-Block – sperrt Signale ±30 Min um High-Impact Events
+        if getattr(self.config, "news_block_enabled", True):
+            minutes_before = getattr(self.config, "news_block_minutes_before", 30)
+            minutes_after = getattr(self.config, "news_block_minutes_after", 30)
+            blocked, block_reason = self.macro_agent.check_news_block(
+                symbol,
+                minutes_before=minutes_before,
+                minutes_after=minutes_after,
+            )
+            if blocked:
+                logger.info(f"[Orchestrator] {symbol} NEWS-BLOCK: {block_reason}")
+                return self._build_rejected_signal(
+                    symbol, "neutral", macro_result, {}, {}, {}, {}, {}, {}
+                )
+
+        # P2.1: Korrelations-Check – kein Trade wenn korreliertes Symbol bereits offen
+        if getattr(self.config, "correlation_check_enabled", True) and open_symbols:
+            blocked, blocking_sym = has_correlated_open_position(symbol, open_symbols)
+            if blocked:
+                logger.debug(
+                    f"{symbol}: Korrelations-Block – {blocking_sym} bereits offen"
+                )
+                return self._build_rejected_signal(
+                    symbol, "neutral", macro_result, {}, {}, {}, {}, {}, {}
+                )
+
         # 2. Trend-Analyse
         trend_result = self.trend_agent.run({"symbol": symbol, "ohlcv": ohlcv_htf})
         direction = trend_result.get("direction", "neutral")
         if direction in ("neutral", "sideways"):
             logger.debug(f"{symbol}: Kein klarer Trend ({direction})")
+            return None
+
+        # P2.2: Asian-Session-Block – kein Trend-Trading in der Asian Session
+        if not is_trend_trading_allowed(self.config):
+            logger.debug(f"{symbol}: Asian Session – Trend-Trading blockiert")
             return None
 
         # 3. Volatilitäts-Analyse
@@ -303,8 +371,41 @@ class Orchestrator:
             },
         )
 
+        # P2.4: Session-Scoring – Confidence-Bonus vor Schwellwert-Prüfung
+        if getattr(self.config, "session_scoring_enabled", True):
+            session_bonus = get_session_bonus(symbol, self.config)
+            if session_bonus > 0:
+                old_score = signal.confidence_score
+                signal.confidence_score = min(100.0, old_score + session_bonus)
+                logger.debug(
+                    f"{symbol}: Session-Bonus +{session_bonus} "
+                    f"({old_score:.1f} → {signal.confidence_score:.1f})"
+                )
+
+        # P2.3: Safe-Haven Logik bei Risk-Off
+        if getattr(self.config, "safe_haven_enabled", True) and risk_sentiment == "risk_off":
+            is_safe_haven = symbol in SAFE_HAVEN_SYMBOLS
+            if is_safe_haven:
+                bonus = int(getattr(self.config, "safe_haven_confidence_bonus", 10))
+                old_score = signal.confidence_score
+                signal.confidence_score = min(100.0, old_score + bonus)
+                logger.debug(
+                    f"{symbol}: Safe-Haven Bonus +{bonus} bei Risk-Off "
+                    f"({old_score:.1f} → {signal.confidence_score:.1f})"
+                )
+            else:
+                # Nicht-Safe-Haven bei Risk-Off: verwerfen wenn unter 75%
+                if signal.confidence_score < 75.0:
+                    logger.debug(
+                        f"{symbol}: Risk-Off – kein Safe-Haven, Score zu niedrig "
+                        f"({signal.confidence_score:.1f} < 75)"
+                    )
+                    signal.status = SignalStatus.REJECTED
+                    return signal
+
         # Status setzen
-        if validation_result.get("validated", False) and signal.confidence_score >= self.config.min_confidence_score:
+        min_score = float(getattr(self.config, "min_confidence_score", 80.0))
+        if validation_result.get("validated", False) and signal.confidence_score >= min_score:
             signal.status = SignalStatus.APPROVED
             logger.info(f"✅ Signal FREIGEGEBEN: {signal.summary()}")
         else:

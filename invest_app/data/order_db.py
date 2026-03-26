@@ -16,9 +16,16 @@ class OrderDB:
     """Thread-sicheres SQLite Order-Tracking."""
 
     def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(str(db_path))
+        self._in_memory = str(db_path) == ":memory:"
+        if not self._in_memory:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Für :memory: eine persistente shared connection halten
+        self._shared_conn: sqlite3.Connection | None = (
+            sqlite3.connect(":memory:", check_same_thread=False)
+            if self._in_memory else None
+        )
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -64,6 +71,10 @@ class OrderDB:
             """)
 
     def _connect(self) -> sqlite3.Connection:
+        if self._in_memory and self._shared_conn is not None:
+            conn = self._shared_conn
+            conn.row_factory = sqlite3.Row
+            return conn
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         return conn

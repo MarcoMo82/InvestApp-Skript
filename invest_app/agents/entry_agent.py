@@ -10,6 +10,12 @@ from typing import Any
 import pandas as pd
 
 from agents.base_agent import BaseAgent
+from utils.smc import (
+    find_fair_value_gaps,
+    find_order_blocks,
+    price_in_fvg,
+    price_near_order_block,
+)
 
 
 class EntryAgent(BaseAgent):
@@ -73,6 +79,9 @@ class EntryAgent(BaseAgent):
         # Candlestick-Muster erkennen
         pattern = self._detect_candle_pattern(df.iloc[-3:])
 
+        # === P3: SMC-Analyse (FVG + Order Block + Confluence) ===
+        smc_meta = self._compute_smc_meta(df, direction, close, nearest_level, atr)
+
         # Entry-Typen prüfen (Priorität: Breakout > Rejection > Pullback)
         if nearest_level:
             level_price = nearest_level["price"]
@@ -103,6 +112,7 @@ class EntryAgent(BaseAgent):
                     "setup_description": description,
                     "candle_pattern": pattern,
                     "confidence_modifier": round(confidence, 2),
+                    **smc_meta,
                 }
 
             rejection = self._check_rejection(df, direction, level_price, tolerance)
@@ -115,6 +125,7 @@ class EntryAgent(BaseAgent):
                     "trigger_condition": rejection["trigger"],
                     "setup_description": rejection["description"],
                     "candle_pattern": pattern,
+                    **smc_meta,
                 }
 
         # Pullback-Entry (EMA-Bounce)
@@ -128,6 +139,7 @@ class EntryAgent(BaseAgent):
                 "trigger_condition": pullback["trigger"],
                 "setup_description": pullback["description"],
                 "candle_pattern": pattern,
+                **smc_meta,
             }
 
         return self._no_entry(symbol, "Kein valides Entry-Setup gefunden")
@@ -275,6 +287,82 @@ class EntryAgent(BaseAgent):
         # Standard-Kerzen
         return "bullish_candle" if close > open_ else "bearish_candle"
 
+    def _compute_smc_meta(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        close: float,
+        nearest_level: dict | None,
+        atr: float,
+    ) -> dict:
+        """
+        Berechnet FVG-, OB- und Confluence-Daten (P3.1–P3.3).
+        Gibt ein Meta-Dict zurück das in Entry-Resultate gemergt wird.
+        """
+        cfg = self._config
+
+        fvg_enabled = getattr(cfg, "fvg_enabled", True) if cfg is not None else True
+        ob_enabled = getattr(cfg, "ob_enabled", True) if cfg is not None else True
+        fvg_bonus = getattr(cfg, "fvg_confidence_bonus", 10) if cfg is not None else 10
+        ob_bonus = getattr(cfg, "ob_confidence_bonus", 15) if cfg is not None else 15
+        ob_tol = getattr(cfg, "ob_tolerance_pips", 5.0) if cfg is not None else 5.0
+        triple_enabled = (
+            getattr(cfg, "smc_triple_confluence_enabled", True) if cfg is not None else True
+        )
+
+        # Toleranz: ATR bevorzugen, sonst ob_tolerance_pips direkt nutzen
+        tolerance = atr if atr > 0 else ob_tol
+
+        fvg_present = False
+        fvg_zone: dict | None = None
+        ob_present = False
+        ob_zone: dict | None = None
+        smc_bonus = 0
+
+        if fvg_enabled:
+            fvgs = find_fair_value_gaps(df, direction)
+            fvg_present, fvg_zone = price_in_fvg(close, fvgs)
+            if fvg_present:
+                smc_bonus += fvg_bonus
+
+        if ob_enabled:
+            obs = find_order_blocks(df, direction)
+            ob_present, ob_zone = price_near_order_block(close, obs, tolerance)
+            if ob_present:
+                smc_bonus += ob_bonus
+
+        at_key_level = nearest_level is not None
+        confluence_bonus = (
+            self._calc_smc_confluence_bonus(fvg_present, ob_present, at_key_level)
+            if triple_enabled
+            else 0
+        )
+        smc_bonus += confluence_bonus
+
+        return {
+            "fvg_present": fvg_present,
+            "fvg_zone": fvg_zone,
+            "ob_present": ob_present,
+            "ob_zone": ob_zone,
+            "smc_confluence": int(fvg_present) + int(ob_present) + int(at_key_level),
+            "smc_confidence_bonus": smc_bonus,
+        }
+
+    @staticmethod
+    def _calc_smc_confluence_bonus(
+        fvg_present: bool, ob_present: bool, at_key_level: bool
+    ) -> int:
+        """
+        Berechnet den SMC Triple-Confluence Bonus (P3.3).
+        Drei erfüllt: +20, zwei erfüllt: +10, einer: +0 (bereits durch P3.1/P3.2 vergeben).
+        """
+        count = int(fvg_present) + int(ob_present) + int(at_key_level)
+        if count == 3:
+            return 20
+        if count == 2:
+            return 10
+        return 0
+
     @staticmethod
     def _no_entry(symbol: str, reason: str) -> dict:
         return {
@@ -285,4 +373,10 @@ class EntryAgent(BaseAgent):
             "trigger_condition": reason,
             "setup_description": reason,
             "candle_pattern": "unbekannt",
+            "fvg_present": False,
+            "fvg_zone": None,
+            "ob_present": False,
+            "ob_zone": None,
+            "smc_confluence": 0,
+            "smc_confidence_bonus": 0,
         }

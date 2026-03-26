@@ -35,10 +35,24 @@ _SECTIONS: dict[str, list[str]] = {
     "sessions": [
         "london_open_hour", "london_close_hour", "ny_open_hour", "ny_close_hour",
         "asian_open_hour", "asian_close_hour",
+        "asian_session_trend_block", "asian_session_start_utc", "asian_session_end_utc",
+        "session_scoring_enabled", "session_overlap_bonus", "session_solo_bonus",
+    ],
+    "correlation": [
+        "correlation_check_enabled",
+    ],
+    "smc": [
+        "fvg_enabled", "fvg_confidence_bonus",
+        "ob_enabled", "ob_confidence_bonus", "ob_tolerance_pips",
+        "smc_triple_confluence_enabled", "smc_triple_bonus", "smc_double_bonus",
+    ],
+    "safe_haven": [
+        "safe_haven_enabled", "vix_risk_off_threshold", "safe_haven_confidence_bonus",
     ],
     "pipeline": [
         "cycle_interval_minutes", "watch_interval_seconds", "news_cache_ttl",
-        "confidence_threshold", "news_yahoo_enabled", "simulation_mode_enabled",
+        "confidence_threshold", "news_yahoo_enabled", "news_block_enabled", "news_block_minutes_before", "news_block_minutes_after",
+        "simulation_mode_enabled",
         "simulation_trigger_after_watch_cycles", "simulation_symbol",
         "simulation_direction", "simulation_lot_size", "startup_analysis_enabled",
     ],
@@ -121,12 +135,42 @@ class Config:
         "ny_close_hour": 22,
         "asian_open_hour": 0,
         "asian_close_hour": 8,
+        # P2.2 – Asian Session Trend-Block
+        "asian_session_trend_block": True,
+        "asian_session_start_utc": 0,
+        "asian_session_end_utc": 9,
+        # P2.4 – Session Scoring
+        "session_scoring_enabled": True,
+        "session_overlap_bonus": 5,
+        "session_solo_bonus": 2,
+        # P3.x – SMC Entry-Logik
+        "fvg_enabled": True,
+        "fvg_confidence_bonus": 10,
+        "ob_enabled": True,
+        "ob_confidence_bonus": 15,
+        "ob_tolerance_pips": 5.0,
+        "smc_triple_confluence_enabled": True,
+        "smc_triple_bonus": 20,
+        "smc_double_bonus": 10,
+        # P2.1 – Korrelations-Check
+        "correlation_check_enabled": True,
+        # P1.4 – News-Block
+        "news_block_enabled": True,
+        "news_block_minutes_before": 30,
+        "news_block_minutes_after": 30,
+        # P2.3 – Safe-Haven
+        "safe_haven_enabled": True,
+        "vix_risk_off_threshold": 20,
+        "safe_haven_confidence_bonus": 10,
         # pipeline
         "cycle_interval_minutes": 5,
         "watch_interval_seconds": 60,
         "news_cache_ttl": 3600,
         "confidence_threshold": 80,
         "news_yahoo_enabled": False,
+        "news_block_enabled": True,
+        "news_block_minutes_before": 30,
+        "news_block_minutes_after": 30,
         "simulation_mode_enabled": False,
         "simulation_trigger_after_watch_cycles": 3,
         "simulation_symbol": "EURUSD",
