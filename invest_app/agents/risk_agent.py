@@ -113,6 +113,15 @@ class RiskAgent(BaseAgent):
                     symbol,
                     f"Max. offene Positionen erreicht ({open_positions}/{max_pos})"
                 )
+
+        # Handbuch Kap. 8.3: Gesamtexposure ≤ 3% des Kontos
+        total_open_risk_pct = data.get("total_open_risk_pct", 0.0)
+        new_risk_pct = self.risk_per_trade
+        if total_open_risk_pct + new_risk_pct > 0.03:
+            return self._rejected(
+                symbol,
+                f"Gesamtexposure {(total_open_risk_pct + new_risk_pct):.1%} überschreitet 3%-Limit"
+            )
         pip_value = data.get("pip_value", 10.0)
         pip_size = data.get("pip_size", self._infer_pip_size(symbol, entry_price))
         ohlcv: Optional[pd.DataFrame] = data.get("ohlcv")
@@ -285,6 +294,7 @@ class RiskAgent(BaseAgent):
         direction: str,
         ema21: Optional[float] = None,
         recent_swing: Optional[float] = None,
+        ohlcv: Optional[pd.DataFrame] = None,
     ) -> float:
         """
         Berechnet neuen Trailing Stop (Handbuch Abschnitt 8.4).
@@ -298,6 +308,9 @@ class RiskAgent(BaseAgent):
         """
         sl_distance = abs(entry_price - current_sl)
 
+        # Strukturbasierter Swing aus OHLCV ableiten (Handbuch Kap. 8.4)
+        structural_swing = self._structural_trailing_stop(direction, ohlcv)
+
         if direction == "long":
             one_to_one = entry_price + sl_distance
             if current_price < one_to_one:
@@ -308,6 +321,8 @@ class RiskAgent(BaseAgent):
                 new_sl = max(new_sl, ema21)
             if recent_swing is not None:
                 new_sl = max(new_sl, recent_swing)
+            if structural_swing is not None:
+                new_sl = max(new_sl, structural_swing)
             # Nur verbessern: SL darf nicht tiefer als aktuell
             return max(current_sl, new_sl)
 
@@ -321,10 +336,40 @@ class RiskAgent(BaseAgent):
                 new_sl = min(new_sl, ema21)
             if recent_swing is not None:
                 new_sl = min(new_sl, recent_swing)
+            if structural_swing is not None:
+                new_sl = min(new_sl, structural_swing)
             # Nur verbessern: SL darf nicht höher als aktuell
             return min(current_sl, new_sl)
 
         return current_sl
+
+    @staticmethod
+    def _structural_trailing_stop(
+        direction: str, ohlcv: "Optional[pd.DataFrame]"
+    ) -> "Optional[float]":
+        """
+        Strukturbasierter Trailing Stop (Handbuch Kap. 8.4).
+        Long:  letztes Swing-Low  (2 niedrigere Lows  links und rechts)
+        Short: letztes Swing-High (2 höhere Highs links und rechts)
+        """
+        if ohlcv is None or len(ohlcv) < 5:
+            return None
+
+        lows = ohlcv["low"].values
+        highs = ohlcv["high"].values
+
+        if direction == "long":
+            # Rückwärts suchen: erstes Swing-Low zurückgeben
+            for i in range(len(lows) - 3, 1, -1):
+                if (lows[i] < lows[i - 1] and lows[i] < lows[i - 2]
+                        and lows[i] < lows[i + 1] and lows[i] < lows[i + 2]):
+                    return float(lows[i])
+        elif direction == "short":
+            for i in range(len(highs) - 3, 1, -1):
+                if (highs[i] > highs[i - 1] and highs[i] > highs[i - 2]
+                        and highs[i] > highs[i + 1] and highs[i] > highs[i + 2]):
+                    return float(highs[i])
+        return None
 
     @staticmethod
     def _rejected(symbol: str, reason: str) -> dict:

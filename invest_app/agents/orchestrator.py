@@ -319,8 +319,10 @@ class Orchestrator:
             logger.debug(f"{symbol}: Kein Entry-Setup")
             return None
 
-        # 6. Risk-Analyse (P1.1: open_positions übergeben)
+        # 6. Risk-Analyse (P1.1: open_positions, Handbuch 8.3: Gesamtexposure übergeben)
         balance = self.connector.get_account_balance()
+        risk_per_trade = getattr(self.config, "risk_per_trade", 0.01)
+        total_open_risk_pct = open_positions * risk_per_trade
         risk_result = self.risk_agent.run({
             "symbol": symbol,
             "direction": direction,
@@ -328,6 +330,7 @@ class Orchestrator:
             "atr_value": vol_result.get("atr_value", 0.0),
             "account_balance": balance,
             "open_positions": open_positions,
+            "total_open_risk_pct": total_open_risk_pct,
         })
 
         if not risk_result.get("trade_allowed", False):

@@ -68,8 +68,8 @@ class TestVolumeCheckBreakout:
             assert result.get("confidence_modifier", 1.0) == 1.0
             assert "Volumenbestätigung" not in result["setup_description"]
 
-    def test_breakout_with_low_volume_penalty(self):
-        """Breakout mit Volumen < 150% → confidence_modifier = 0.6 und Hinweis."""
+    def test_breakout_with_low_volume_rejected(self):
+        """Breakout mit Volumen < 150% → Trade wird abgelehnt (entry_found=False)."""
         agent = EntryAgent()
         df = _make_breakout_df(n=50, level=1.1050, volume_ratio=1.0)  # Nur 100% = zu wenig
         result = agent.analyze({
@@ -80,9 +80,9 @@ class TestVolumeCheckBreakout:
             "atr_value": 0.0005,
         })
 
-        if result["entry_found"] and result["entry_type"] == "breakout":
-            assert result.get("confidence_modifier", 1.0) == pytest.approx(0.6)
-            assert "Volumenbestätigung" in result["setup_description"]
+        # Handbuch 7.1: Breakout ohne Volumen wird abgelehnt
+        assert result["entry_found"] is False
+        assert "Volumenbestätigung" in result["trigger_condition"]
 
     def test_breakout_with_very_high_volume_no_penalty(self):
         """Volumen 300% des Durchschnitts → kein Penalty (weit über 150%)."""
@@ -162,7 +162,7 @@ class TestVolumeCheckBreakout:
             assert "confidence_modifier" not in result or result["confidence_modifier"] == 1.0
 
     def test_short_breakout_volume_check(self):
-        """Volume-Check gilt auch für Short-Breakouts."""
+        """Volume-Check gilt auch für Short-Breakouts: zu wenig Volumen → abgelehnt."""
         agent = EntryAgent()
         level = 1.1050
         df = _make_breakout_df(n=50, level=level, breakout=True, volume_ratio=1.0)
@@ -178,8 +178,9 @@ class TestVolumeCheckBreakout:
             "atr_value": 0.0005,
         })
 
-        if result["entry_found"] and result["entry_type"] == "breakout":
-            assert result.get("confidence_modifier", 1.0) == pytest.approx(0.6)
+        # Handbuch 7.1: Breakout ohne Volumen wird abgelehnt
+        assert result["entry_found"] is False
+        assert "Volumenbestätigung" in result["trigger_condition"]
 
     def test_no_entry_returns_correct_structure(self):
         """Kein Entry → korrekte Struktur."""

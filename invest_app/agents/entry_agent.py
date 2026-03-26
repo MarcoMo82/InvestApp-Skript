@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from agents.base_agent import BaseAgent
+from utils.patterns import get_pattern_confidence_bonus
 from utils.smc import (
     find_fair_value_gaps,
     find_order_blocks,
@@ -82,6 +83,12 @@ class EntryAgent(BaseAgent):
         # === P3: SMC-Analyse (FVG + Order Block + Confluence) ===
         smc_meta = self._compute_smc_meta(df, direction, close, nearest_level, atr)
 
+        # === Kap. 5: Chart-Muster (optionaler Confidence-Bonus) ===
+        pattern_bonus = get_pattern_confidence_bonus(df, direction)
+        if pattern_bonus > 0:
+            smc_meta = dict(smc_meta)
+            smc_meta["smc_confidence_bonus"] = smc_meta.get("smc_confidence_bonus", 0) + pattern_bonus
+
         # Entry-Typen prüfen (Priorität: Breakout > Rejection > Pullback)
         if nearest_level:
             level_price = nearest_level["price"]
@@ -89,19 +96,14 @@ class EntryAgent(BaseAgent):
 
             breakout = self._check_breakout(df, direction, level_price, tolerance)
             if breakout["found"]:
-                # Handbuch: Breakout nur gültig wenn Volumen > 150% des 20P-Durchschnitts
-                confidence = 1.0
-                reasons: list[str] = []
+                # Handbuch Kap. 7.1: Volumen < 150% des 20P-Durchschnitts → Trade ablehnen
                 if "volume" in df.columns and len(df) >= 20:
                     vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
                     current_vol = float(df["volume"].iloc[-1])
                     if vol_avg_20 > 0 and current_vol < vol_avg_20 * 1.5:
-                        confidence *= 0.6
-                        reasons.append("Breakout ohne Volumenbestätigung")
-
-                description = breakout["description"]
-                if reasons:
-                    description += f" | Hinweis: {', '.join(reasons)}"
+                        return self._no_entry(
+                            symbol, "Breakout ohne Volumenbestätigung (< 150% Durchschnitt)"
+                        )
 
                 return {
                     "symbol": symbol,
@@ -109,9 +111,9 @@ class EntryAgent(BaseAgent):
                     "entry_type": "breakout",
                     "entry_price": breakout["entry_price"],
                     "trigger_condition": breakout["trigger"],
-                    "setup_description": description,
+                    "setup_description": breakout["description"],
                     "candle_pattern": pattern,
-                    "confidence_modifier": round(confidence, 2),
+                    "confidence_modifier": 1.0,
                     **smc_meta,
                 }
 
@@ -127,6 +129,22 @@ class EntryAgent(BaseAgent):
                     "candle_pattern": pattern,
                     **smc_meta,
                 }
+
+        # Stop-Hunt-Reversal-Entry (Handbuch Kap. 8.5)
+        stop_hunt = self.detect_stop_hunt_reversal(df, direction, atr)
+        if stop_hunt["found"]:
+            return {
+                "symbol": symbol,
+                "entry_found": True,
+                "entry_type": "stop_hunt_reversal",
+                "entry_price": stop_hunt["entry_price"],
+                "trigger_condition": stop_hunt["trigger"],
+                "setup_description": stop_hunt["description"],
+                "candle_pattern": pattern,
+                "confidence_modifier": 1.0,
+                "smc_confidence_bonus": smc_meta.get("smc_confidence_bonus", 0) + 10,
+                **{k: v for k, v in smc_meta.items() if k != "smc_confidence_bonus"},
+            }
 
         # Pullback-Entry (EMA-Bounce)
         pullback = self._check_pullback(df, direction, atr)
@@ -187,9 +205,12 @@ class EntryAgent(BaseAgent):
 
         if direction == "long":
             # Preis testet Level von oben mit langem unterem Wick
+            # Handbuch Kap. 7.3: Wick ≥ 2× Body
             lower_wick = min(open_, close) - low
-            wick_ratio = lower_wick / range_
-            if abs(low - level) <= tolerance and wick_ratio > 0.5 and close > open_:
+            if (abs(low - level) <= tolerance
+                    and body > 0
+                    and (lower_wick / body) >= 2.0
+                    and close > open_):
                 return {
                     "found": True,
                     "entry_price": close,
@@ -198,8 +219,10 @@ class EntryAgent(BaseAgent):
                 }
         elif direction == "short":
             upper_wick = high - max(open_, close)
-            wick_ratio = upper_wick / range_
-            if abs(high - level) <= tolerance and wick_ratio > 0.5 and close < open_:
+            if (abs(high - level) <= tolerance
+                    and body > 0
+                    and (upper_wick / body) >= 2.0
+                    and close < open_):
                 return {
                     "found": True,
                     "entry_price": close,
@@ -218,7 +241,18 @@ class EntryAgent(BaseAgent):
         prev_close = float(close_series.iloc[-2])
         tolerance = atr * 0.3 if atr > 0 else ema_21 * 0.0005
 
+        # Handbuch Kap. 7.2: Rücksetzer max. 61,8% des letzten Impulses
+        lookback = min(20, len(df))
+        impulse_high = float(df["high"].iloc[-lookback:].max())
+        impulse_low = float(df["low"].iloc[-lookback:].min())
+        impulse_size = abs(impulse_high - impulse_low)
+
         if direction == "long":
+            if impulse_size > 0:
+                pullback_depth = abs(last_close - impulse_high) / impulse_size
+                if pullback_depth > 0.618:
+                    return {"found": False}  # Pullback zu tief
+
             # Preis zieht zur EMA zurück und bounced (Schlusskurs über EMA, vorher darunter)
             if (abs(last_close - ema_21) <= tolerance
                     and last_close > ema_21
@@ -227,9 +261,14 @@ class EntryAgent(BaseAgent):
                     "found": True,
                     "entry_price": last_close,
                     "trigger": f"Pullback zur EMA-21 ({ema_21:.5f})",
-                    "description": f"Bullischer EMA-21 Bounce – Einstieg nach Pullback",
+                    "description": "Bullischer EMA-21 Bounce – Einstieg nach Pullback",
                 }
         elif direction == "short":
+            if impulse_size > 0:
+                pullback_depth = abs(last_close - impulse_low) / impulse_size
+                if pullback_depth > 0.618:
+                    return {"found": False}  # Pullback zu tief
+
             if (abs(last_close - ema_21) <= tolerance
                     and last_close < ema_21
                     and prev_close >= ema_21):
@@ -237,8 +276,93 @@ class EntryAgent(BaseAgent):
                     "found": True,
                     "entry_price": last_close,
                     "trigger": f"Pullback zur EMA-21 ({ema_21:.5f})",
-                    "description": f"Bearischer EMA-21 Bounce – Einstieg nach Pullback",
+                    "description": "Bearischer EMA-21 Bounce – Einstieg nach Pullback",
                 }
+        return {"found": False}
+
+    def detect_stop_hunt_reversal(
+        self, df: pd.DataFrame, direction: str, atr: float
+    ) -> dict:
+        """
+        Erkennt Liquidity Sweep / Stop-Hunt-Reversal (Handbuch Kap. 8.5).
+
+        Kriterien:
+        1. Kurs unterschreitet Swing-Low (Long) oder überschreitet Swing-High (Short)
+           um max. 0.1–0.5 ATR
+        2. Schließt zurück über/unter das Level (Rejection-Wick sichtbar)
+        3. Rejection-Wick ≥ 2× Body oder starkes Umkehrvolumen (> 150% Durchschnitt)
+        """
+        if len(df) < 10 or atr <= 0:
+            return {"found": False}
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high = float(last["high"])
+        low = float(last["low"])
+        body = abs(close - open_)
+
+        # Swing-Level aus den letzten 10 abgeschlossenen Bars berechnen
+        lookback = df.iloc[-11:-1]
+        if len(lookback) < 5:
+            return {"found": False}
+
+        sweep_tolerance_min = atr * 0.1
+        sweep_tolerance_max = atr * 0.5
+
+        if direction == "long":
+            swing_low = float(lookback["low"].min())
+            # Kriterium 1: Wick hat das Swing-Low um max. 0.5 ATR unterschritten
+            sweep_depth = swing_low - low
+            if not (sweep_tolerance_min <= sweep_depth <= sweep_tolerance_max):
+                return {"found": False}
+            # Kriterium 2: Schlusskurs zurück über Swing-Low
+            if close <= swing_low:
+                return {"found": False}
+            # Kriterium 3: Rejection-Wick ≥ 2× Body oder Volumenbestätigung
+            lower_wick = min(open_, close) - low
+            wick_ok = body > 0 and (lower_wick / body) >= 2.0
+            vol_ok = False
+            if "volume" in df.columns and len(df) >= 20:
+                vol_avg = float(df["volume"].rolling(20).mean().iloc[-1])
+                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * 1.5
+            if not (wick_ok or vol_ok):
+                return {"found": False}
+            return {
+                "found": True,
+                "entry_price": close,
+                "trigger": f"Stop-Hunt unter Swing-Low {swing_low:.5f}",
+                "description": (
+                    f"Liquidity Sweep unter {swing_low:.5f} "
+                    f"(Tiefe {sweep_depth:.5f}) – Umkehr bestätigt"
+                ),
+            }
+
+        elif direction == "short":
+            swing_high = float(lookback["high"].max())
+            sweep_depth = high - swing_high
+            if not (sweep_tolerance_min <= sweep_depth <= sweep_tolerance_max):
+                return {"found": False}
+            if close >= swing_high:
+                return {"found": False}
+            upper_wick = high - max(open_, close)
+            wick_ok = body > 0 and (upper_wick / body) >= 2.0
+            vol_ok = False
+            if "volume" in df.columns and len(df) >= 20:
+                vol_avg = float(df["volume"].rolling(20).mean().iloc[-1])
+                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * 1.5
+            if not (wick_ok or vol_ok):
+                return {"found": False}
+            return {
+                "found": True,
+                "entry_price": close,
+                "trigger": f"Stop-Hunt über Swing-High {swing_high:.5f}",
+                "description": (
+                    f"Liquidity Sweep über {swing_high:.5f} "
+                    f"(Höhe {sweep_depth:.5f}) – Umkehr bestätigt"
+                ),
+            }
+
         return {"found": False}
 
     def _detect_candle_pattern(self, df: pd.DataFrame) -> str:
