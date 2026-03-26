@@ -176,34 +176,52 @@ class MT5Connector:
         """
         self._require_connection()
 
+        # Symbol in Market Watch aktivieren
+        if not mt5.symbol_select(signal.instrument, True):
+            logger.warning(f"[mt5_connector] Symbol {signal.instrument} nicht in Market Watch – versuche trotzdem")
+
         symbol_info = mt5.symbol_info(signal.instrument)
         if symbol_info is None:
             logger.error(f"Symbol {signal.instrument} nicht gefunden.")
             return None
 
         order_type = mt5.ORDER_TYPE_BUY if str(signal.direction) == "long" else mt5.ORDER_TYPE_SELL
-        price = mt5.symbol_info_tick(signal.instrument)
-        ask = price.ask if order_type == mt5.ORDER_TYPE_BUY else price.bid
+
+        # Aktuellen Bid/Ask-Preis holen (für TRADE_ACTION_DEAL erforderlich)
+        tick = mt5.symbol_info_tick(signal.instrument)
+        if tick is None:
+            logger.error(f"Kein Tick für {signal.instrument} – Order abgebrochen.")
+            return None
+        price = tick.ask if str(signal.direction) == "long" else tick.bid
+
+        # Filling-Mode automatisch ermitteln (broker-kompatibel)
+        filling_mode = symbol_info.filling_mode if symbol_info else 0
+        if filling_mode & 2:   # SYMBOL_FILLING_IOC = 2
+            type_filling = mt5.ORDER_FILLING_IOC
+        elif filling_mode & 1:  # SYMBOL_FILLING_FOK = 1
+            type_filling = mt5.ORDER_FILLING_FOK
+        else:
+            type_filling = mt5.ORDER_FILLING_RETURN
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": signal.instrument,
             "volume": float(signal.lot_size),
             "type": order_type,
-            "price": ask,
+            "price": price,
             "sl": float(signal.stop_loss),
             "tp": float(signal.take_profit),
-            "deviation": 10,
+            "deviation": 20,
             "magic": 123456,
             "comment": "InvestApp",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": type_filling,
         }
 
         result = mt5.order_send(request)
         if result is not None and result.retcode == 10027:  # AutoTrading disabled
             logger.warning(
-                "[mt5_connector] retcode=10027 (AutoTrading disabled) → Fallback auf file-basierte Order"
+                "[mt5_connector] retcode=10027 (AutoTrading deaktiviert) → Fallback auf file-basierte Order"
             )
             signal_dict = {
                 "symbol": signal.instrument,
@@ -215,15 +233,20 @@ class MT5Connector:
             self.write_order_file(signal_dict)
             return self.read_order_result()
 
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        # retcode 10008 (TRADE_RETCODE_PLACED) = Order platziert, wird noch ausgeführt → auch Erfolg
+        TRADE_RETCODE_PLACED = 10008
+        if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED):
             retcode = result.retcode if result else "None"
             comment = result.comment if result else ""
-            logger.error(f"Order fehlgeschlagen: retcode={retcode} | {comment}")
+            logger.error(
+                f"Order fehlgeschlagen: retcode={retcode} | {comment} | "
+                f"symbol={signal.instrument} price={price} filling={type_filling}"
+            )
             return None
 
         logger.info(
             f"Order ausgeführt: {signal.instrument} {signal.direction} | "
-            f"Ticket: {result.order} | Lot: {signal.lot_size} | Price: {ask}"
+            f"Ticket: {result.order} | Lot: {signal.lot_size} | Preis: {result.price}"
         )
         return result.order
 
@@ -357,14 +380,32 @@ class MT5Connector:
         """Platziert eine Market-Order mit Rohparametern (ohne Signal-Objekt)."""
         self._require_connection()
 
+        # Symbol in Market Watch aktivieren
+        if not mt5.symbol_select(symbol, True):
+            logger.warning(f"[mt5_connector] Symbol {symbol} nicht in Market Watch – versuche trotzdem")
+
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             logger.error(f"Symbol {symbol} nicht gefunden.")
             return None
 
         order_type = mt5.ORDER_TYPE_BUY if direction == "long" else mt5.ORDER_TYPE_SELL
+
+        # Aktuellen Bid/Ask-Preis holen (für TRADE_ACTION_DEAL erforderlich)
         tick = mt5.symbol_info_tick(symbol)
-        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+        if tick is None:
+            logger.error(f"Kein Tick für {symbol} – Order abgebrochen.")
+            return None
+        price = tick.ask if direction == "long" else tick.bid
+
+        # Filling-Mode automatisch ermitteln (broker-kompatibel)
+        filling_mode = symbol_info.filling_mode if symbol_info else 0
+        if filling_mode & 2:   # SYMBOL_FILLING_IOC = 2
+            type_filling = mt5.ORDER_FILLING_IOC
+        elif filling_mode & 1:  # SYMBOL_FILLING_FOK = 1
+            type_filling = mt5.ORDER_FILLING_FOK
+        else:
+            type_filling = mt5.ORDER_FILLING_RETURN
 
         request: dict = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -372,11 +413,11 @@ class MT5Connector:
             "volume": float(lot_size),
             "type": order_type,
             "price": price,
-            "deviation": 10,
+            "deviation": 20,
             "magic": 123456,
             "comment": "InvestApp-Watch",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": type_filling,
         }
         if stop_loss is not None:
             request["sl"] = float(stop_loss)
@@ -387,7 +428,7 @@ class MT5Connector:
 
         if result is not None and result.retcode == 10027:  # AutoTrading disabled
             logger.warning(
-                "[mt5_connector] retcode=10027 (AutoTrading disabled) → Fallback auf file-basierte Order"
+                "[mt5_connector] retcode=10027 (AutoTrading deaktiviert) → Fallback auf file-basierte Order"
             )
             signal_dict = {
                 "symbol": symbol,
@@ -403,13 +444,18 @@ class MT5Connector:
                 return int(ticket) if ticket is not None else None
             return None
 
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        # retcode 10008 (TRADE_RETCODE_PLACED) = Order platziert, wird noch ausgeführt → auch Erfolg
+        TRADE_RETCODE_PLACED = 10008
+        if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED):
             retcode = result.retcode if result else "None"
             comment = result.comment if result else ""
-            logger.error(f"Market-Order fehlgeschlagen: retcode={retcode} | {comment}")
+            logger.error(
+                f"Market-Order fehlgeschlagen: retcode={retcode} | {comment} | "
+                f"symbol={symbol} price={price} filling={type_filling}"
+            )
             return None
 
-        logger.info(f"Market-Order ausgeführt: {symbol} {direction} | Ticket: {result.order}")
+        logger.info(f"Market-Order ausgeführt: {symbol} {direction} | Ticket: {result.order} | Preis: {price}")
         return result.order
 
     def modify_position(self, ticket: int, new_sl: float) -> bool:
@@ -512,16 +558,48 @@ class MT5Connector:
             {
                 "ticket": p.ticket,
                 "symbol": p.symbol,
+                "direction": "buy" if p.type == 0 else "sell",
                 "type": "long" if p.type == 0 else "short",
                 "volume": p.volume,
                 "open_price": p.price_open,
                 "sl": p.sl,
                 "tp": p.tp,
                 "profit": p.profit,
-                "open_time": datetime.utcfromtimestamp(p.time),
+                "magic": p.magic,
+                "open_time": p.time,
             }
             for p in positions
         ]
+
+    def get_closed_deals(self, from_timestamp: float) -> list[dict]:
+        """Gibt abgeschlossene Deals seit from_timestamp zurück (nur EXIT-Deals)."""
+        if not self._connected:
+            return []
+        try:
+            date_from = datetime.fromtimestamp(from_timestamp, tz=timezone.utc)
+            date_to = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(date_from, date_to)
+            if deals is None:
+                return []
+            result = []
+            for d in deals:
+                # DEAL_ENTRY_OUT = 1 (Exit-Deal = Position geschlossen)
+                if d.entry != 1:
+                    continue
+                result.append({
+                    "ticket":      d.position_id,   # Position-Ticket (= MT5 Ticket)
+                    "deal_ticket": d.ticket,
+                    "symbol":      d.symbol,
+                    "profit":      d.profit,
+                    "close_price": d.price,
+                    "close_time":  d.time,
+                    "volume":      d.volume,
+                    "magic":       d.magic,
+                })
+            return result
+        except Exception as e:
+            logger.warning(f"get_closed_deals Fehler: {e}")
+            return []
 
     def get_symbols_from_file(self, output_dir: str = "Output") -> list[str]:
         """

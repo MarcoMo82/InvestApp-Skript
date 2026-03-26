@@ -8,6 +8,7 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from pathlib import Path
 
 from config import config
 from utils.logger import get_logger, setup_root_logger
@@ -91,10 +92,16 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
     from agents.learning_agent import LearningAgent
     from agents.watch_agent import WatchAgent
     from agents.chart_exporter import ChartExporter
+    from data.order_db import OrderDB
 
     learning_agent = LearningAgent(output_dir=config.output_dir, db=db, config=config)
 
     chart_exporter = ChartExporter(config=config)
+
+    # Order-Datenbank initialisieren
+    order_db_path = Path(config.output_dir).parent / "data" / "orders.db"
+    order_db = OrderDB(db_path=order_db_path)
+    logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
 
     # Simulation Agent (optional, nur wenn aktiviert)
     simulation_agent = None
@@ -112,6 +119,7 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         config=config,
         simulation_agent=simulation_agent,
         chart_exporter=chart_exporter,
+        order_db=order_db,
     )
 
     agents = [
