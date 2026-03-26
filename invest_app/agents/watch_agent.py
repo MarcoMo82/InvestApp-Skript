@@ -17,8 +17,6 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_ORDERS_PER_SYMBOL = 2  # Maximale gleichzeitige Orders pro Symbol
-
 
 class WatchAgent:
     """
@@ -34,7 +32,6 @@ class WatchAgent:
         simulation_agent: Optional[Any] = None,
         chart_exporter: Optional[Any] = None,
         risk_agent: Optional[Any] = None,
-        order_db: Optional[Any] = None,
     ) -> None:
         self.connector = connector
         self.db = db
@@ -42,11 +39,8 @@ class WatchAgent:
         self.simulation_agent = simulation_agent
         self.chart_exporter = chart_exporter
         self.risk_agent = risk_agent
-        self.order_db = order_db          # OrderDB-Instanz für persistentes Tracking
         self._pending_signals: list[dict] = []
         self._lock = threading.Lock()
-        self._last_sync_ts: float = 0.0   # Letzter MT5-Sync Timestamp
-        self._sync_counter: int = 0        # Zähler für 15s-Ticks (Sync alle 4 Ticks = 60s)
 
     def add_pending_signal(self, signal_dict: dict) -> None:
         """Fügt ein freigegebenes Signal zur Überwachungsliste hinzu."""
@@ -57,28 +51,13 @@ class WatchAgent:
         logger.info(f"Signal zur Überwachung hinzugefügt: {signal_dict.get('instrument')}")
 
     def run_watch_cycle(self) -> list[dict]:
-        """Hauptmethode – alle 15 Sekunden aufrufen."""
-        self._sync_counter += 1
-        do_full_sync = (self._sync_counter % 4 == 0)  # Alle 60s (4 × 15s)
-
+        """Hauptmethode – jede Minute aufrufen. Alias für check_and_execute."""
+        logger.info(
+            f"[Watch-Agent] ♦ Minuten-Check | "
+            f"Pending Signals: {self.pending_count} | "
+            f"Zeit: {datetime.now(timezone.utc).strftime('%H:%M:%S')}"
+        )
         result = self.check_and_execute()
-
-        # MT5-Positionen nur alle 60s synchronisieren
-        if do_full_sync:
-            self.sync_positions_from_mt5()
-
-        # Status nur alle 60s in Konsole ausgeben
-        if do_full_sync and self.order_db is not None:
-            print(self.order_db.format_status())
-
-        # Log nur bei Aktivität oder alle 60s
-        if result or do_full_sync:
-            logger.info(
-                f"[Watch-Agent] ♦ 15s-Check | "
-                f"Pending: {self.pending_count} | "
-                f"Ausgeführt: {len(result)} | "
-                f"Zeit: {datetime.now(timezone.utc).strftime('%H:%M:%S')}"
-            )
 
         # Zonen für alle Symbole aktualisieren
         if self.chart_exporter and getattr(self._config, "watch_agent_zone_update_enabled", True):
@@ -373,12 +352,8 @@ class WatchAgent:
     def _place_order(self, signal: dict) -> Optional[int]:
         """Platziert eine Market-Order über den Connector und speichert in der DB.
 
-        Prüft vor der Ausführung:
-        - Max. 2 Orders pro Symbol (MAX_ORDERS_PER_SYMBOL)
-        - 2. Order nur wenn Confidence > bisherige Confidence
-
         Returns:
-            Ticket-Nummer bei Erfolg, None bei Fehler oder Ablehnung.
+            Ticket-Nummer bei Erfolg, None bei Fehler.
         """
         try:
             symbol = signal.get("instrument", "")
@@ -386,43 +361,7 @@ class WatchAgent:
             lot_size = signal.get("lot_size", 0.01)
             stop_loss = signal.get("stop_loss")
             take_profit = signal.get("take_profit")
-            confidence = float(signal.get("confidence_score", signal.get("confidence", 0)))
 
-            # ── Symbol-Limit prüfen ─────────────────────────────────────────
-            if self.order_db is not None:
-                count = self.order_db.get_order_count(symbol)
-                if count >= MAX_ORDERS_PER_SYMBOL:
-                    logger.warning(
-                        f"[Watch-Agent] ❌ {symbol}: Max. {MAX_ORDERS_PER_SYMBOL} Orders erreicht "
-                        f"({count} aktiv) – Signal verworfen"
-                    )
-                    return None
-
-                if count == 1:
-                    max_conf = self.order_db.get_max_confidence(symbol)
-                    if confidence <= max_conf:
-                        logger.warning(
-                            f"[Watch-Agent] ❌ {symbol}: Confidence {confidence:.0f}% ≤ "
-                            f"bestehende {max_conf:.0f}% – 2. Order abgelehnt"
-                        )
-                        return None
-                    logger.info(
-                        f"[Watch-Agent] 2. Order {symbol}: Confidence {confidence:.0f}% > {max_conf:.0f}% ✓"
-                    )
-
-            # ── Order-ID in DB anlegen (status=pending) ─────────────────────
-            order_id = None
-            if self.order_db is not None:
-                order_id = self.order_db.add_order(
-                    symbol=symbol,
-                    direction=direction,
-                    sl=stop_loss or 0.0,
-                    tp=take_profit or 0.0,
-                    confidence=confidence,
-                    lot_size=lot_size,
-                )
-
-            # ── Order senden ────────────────────────────────────────────────
             ticket = None
             if hasattr(self.connector, "place_market_order"):
                 ticket = self.connector.place_market_order(
@@ -434,87 +373,18 @@ class WatchAgent:
                 )
             else:
                 logger.warning(
-                    f"[Watch-Agent] place_market_order nicht verfügbar – {symbol} übersprungen"
+                    f"[Watch-Agent] place_market_order nicht verfügbar – Order für {symbol} übersprungen"
                 )
 
-            # ── Ergebnis in DB speichern ────────────────────────────────────
             if ticket is not None:
-                if self.order_db is not None and order_id is not None:
-                    self.order_db.update_ticket(order_id, ticket)
                 if self.db is not None:
                     self.db.save_trade(signal)
-                logger.info(f"[Watch-Agent] ✅ Order ausgeführt: {symbol} Ticket={ticket}")
                 return ticket
-            else:
-                if self.order_db is not None and order_id is not None:
-                    self.order_db.mark_failed(order_id)
-                return None
 
+            return None
         except Exception as e:
             logger.error(f"Order-Platzierung fehlgeschlagen: {e}")
             return None
-
-    def sync_positions_from_mt5(self) -> None:
-        """
-        Synchronisiert offene MT5-Positionen mit der OrderDB.
-        - Neue MT5-Positionen → in DB eintragen
-        - DB-Orders ohne MT5-Position → als 'closed' markieren
-        Wird jede Minute aufgerufen.
-        """
-        if self.order_db is None:
-            return
-        if not hasattr(self.connector, "get_open_positions"):
-            return
-
-        try:
-            mt5_positions = self.connector.get_open_positions()
-            mt5_tickets = {p["ticket"] for p in mt5_positions}
-
-            # Neue MT5-Positionen in DB eintragen
-            for pos in mt5_positions:
-                self.order_db.upsert_open_position(
-                    symbol=pos["symbol"],
-                    direction=pos.get("direction", "buy"),
-                    ticket=pos["ticket"],
-                    lot_size=pos.get("volume", 0),
-                    entry_price=pos.get("open_price", 0),
-                    sl=pos.get("sl", 0),
-                    tp=pos.get("tp", 0),
-                    profit=pos.get("profit", 0),
-                )
-
-            # DB-Orders ohne MT5-Position → geschlossen
-            db_tickets = self.order_db.get_all_open_tickets()
-            closed_tickets = db_tickets - mt5_tickets
-
-            if closed_tickets and hasattr(self.connector, "get_closed_deals"):
-                from datetime import datetime as dt
-                since = self._last_sync_ts or (dt.utcnow().timestamp() - 3600)
-                deals = self.connector.get_closed_deals(since)
-                deals_by_ticket = {d["ticket"]: d for d in deals}
-
-                for ticket in closed_tickets:
-                    deal = deals_by_ticket.get(ticket)
-                    self.order_db.update_status(
-                        ticket=ticket,
-                        status="closed",
-                        close_price=deal["close_price"] if deal else None,
-                        pnl=deal["profit"] if deal else None,
-                        closed_at=deal["close_time"] if deal else None,
-                    )
-                    pnl_str = f"{deal['profit']:+.2f}" if deal else "n/a"
-                    logger.info(
-                        f"[Watch-Agent] Position geschlossen: Ticket={ticket} PnL={pnl_str}"
-                    )
-            elif closed_tickets:
-                for ticket in closed_tickets:
-                    self.order_db.update_status(ticket=ticket, status="closed")
-
-            from datetime import datetime as dt
-            self._last_sync_ts = dt.utcnow().timestamp()
-
-        except Exception as e:
-            logger.error(f"[Watch-Agent] sync_positions_from_mt5 Fehler: {e}")
 
     def _execute_order(self, signal: dict) -> bool:
         """

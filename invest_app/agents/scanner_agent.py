@@ -6,25 +6,15 @@ Läuft vor dem Haupt-Zyklus (konfigurierbar alle 60 Minuten).
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
-
-from data.symbol_provider import SymbolProvider, SymbolProviderError
+from typing import Any
 
 
 class ScannerAgent:
     """Scannt MT5-Symbole und wählt Top-N nach Handelspotenzial."""
 
-    def __init__(
-        self,
-        config: Any,
-        connector: Any,
-        symbol_provider: Optional[SymbolProvider] = None,
-        order_db: Any = None,
-    ) -> None:
+    def __init__(self, config: Any, connector: Any) -> None:
         self.config = config
         self.connector = connector
-        self.symbol_provider = symbol_provider
-        self.order_db = order_db
         self.active_symbols: list[str] = []
         self.logger = logging.getLogger(__name__)
 
@@ -44,35 +34,39 @@ class ScannerAgent:
             f"[Scanner] {len(candidates)} gescannt, {len(scored)} gescort, "
             f"{len(self.active_symbols)} ausgewählt, {cat_excluded} durch Kategorie-Limit aussortiert"
         )
-
-        # Symbol-Persistenz: scored Liste in DB speichern
-        _order_db = self.order_db or (
-            self.symbol_provider.order_db if self.symbol_provider else None
-        )
-        if _order_db is not None and scored:
-            try:
-                sym_data = [
-                    {"symbol": s, "category": self._get_category(s), "score": score}
-                    for s, score, _ in scored
-                ]
-                _order_db.save_symbols(sym_data)
-                self.logger.info(f"[Scanner] {len(sym_data)} Symbole in DB persistiert")
-            except Exception as e:
-                self.logger.warning(f"[Scanner] DB-Speicherung fehlgeschlagen: {e}")
-
         return self.active_symbols
 
     def _get_broker_symbols(self) -> list[str]:
-        """Ruft verfügbare Symbole vom SymbolProvider ab.
-
-        Raises:
-            SymbolProviderError: Wird nach oben propagiert wenn keine Quelle verfügbar.
         """
-        if self.symbol_provider is None:
-            raise SymbolProviderError(
-                "[Scanner] Kein SymbolProvider konfiguriert – System stoppt"
-            )
-        return self.symbol_provider.get_symbols()
+        Priorität:
+        1. available_symbols.json von MT5 EA (primär, aktuell)
+        2. MT5 API direkt (wenn verbunden)
+        3. config.fallback_symbols (letzter Ausweg)
+        """
+        # 1. Datei vom EA lesen
+        if hasattr(self.connector, "get_symbols_from_file"):
+            try:
+                symbols = self.connector.get_symbols_from_file()
+                if symbols:
+                    self.logger.info(f"[Scanner] {len(symbols)} Symbole aus available_symbols.json geladen")
+                    return symbols
+            except Exception as e:
+                self.logger.warning(f"[Scanner] get_symbols_from_file() fehlgeschlagen: {e}")
+
+        # 2. MT5 API
+        if hasattr(self.connector, "get_symbols"):
+            try:
+                symbols = self.connector.get_symbols()
+                if symbols:
+                    self.logger.info(f"[Scanner] {len(symbols)} Symbole via MT5 API geladen")
+                    return symbols
+            except Exception as e:
+                self.logger.warning(f"[Scanner] get_symbols() fehlgeschlagen: {e}")
+
+        # 3. Fallback
+        fallback = list(getattr(self.config, "fallback_symbols", getattr(self.config, "all_symbols", [])))
+        self.logger.warning(f"[Scanner] Fallback: {len(fallback)} hardcodierte Symbole")
+        return fallback
 
     def _get_category(self, symbol: str) -> str:
         """Klassifiziert ein Symbol in eine Kategorie."""

@@ -542,6 +542,8 @@ class Orchestrator:
             True  → Trading erlaubt
             False → Limit überschritten, Trading gestoppt
         """
+        if not self.config._data.get("drawdown_enabled", False):
+            return True
         if self._daily_loss_triggered:
             return False
 

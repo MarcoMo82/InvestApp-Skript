@@ -558,48 +558,16 @@ class MT5Connector:
             {
                 "ticket": p.ticket,
                 "symbol": p.symbol,
-                "direction": "buy" if p.type == 0 else "sell",
                 "type": "long" if p.type == 0 else "short",
                 "volume": p.volume,
                 "open_price": p.price_open,
                 "sl": p.sl,
                 "tp": p.tp,
                 "profit": p.profit,
-                "magic": p.magic,
-                "open_time": p.time,
+                "open_time": datetime.utcfromtimestamp(p.time),
             }
             for p in positions
         ]
-
-    def get_closed_deals(self, from_timestamp: float) -> list[dict]:
-        """Gibt abgeschlossene Deals seit from_timestamp zurück (nur EXIT-Deals)."""
-        if not self._connected:
-            return []
-        try:
-            date_from = datetime.fromtimestamp(from_timestamp, tz=timezone.utc)
-            date_to = datetime.now(timezone.utc)
-            deals = mt5.history_deals_get(date_from, date_to)
-            if deals is None:
-                return []
-            result = []
-            for d in deals:
-                # DEAL_ENTRY_OUT = 1 (Exit-Deal = Position geschlossen)
-                if d.entry != 1:
-                    continue
-                result.append({
-                    "ticket":      d.position_id,   # Position-Ticket (= MT5 Ticket)
-                    "deal_ticket": d.ticket,
-                    "symbol":      d.symbol,
-                    "profit":      d.profit,
-                    "close_price": d.price,
-                    "close_time":  d.time,
-                    "volume":      d.volume,
-                    "magic":       d.magic,
-                })
-            return result
-        except Exception as e:
-            logger.warning(f"get_closed_deals Fehler: {e}")
-            return []
 
     def get_symbols_from_file(self, output_dir: str = "Output") -> list[str]:
         """
