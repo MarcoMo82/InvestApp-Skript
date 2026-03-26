@@ -562,163 +562,203 @@ bool ExtractBool(string block, string key)
 }
 
 //+------------------------------------------------------------------+
+//|  JSON-Parser für pending_order.json (robuste Variante)           |
+//+------------------------------------------------------------------+
+string ParseJsonString(string json, string key)
+{
+   string search = "\"" + key + "\"";
+   int key_pos = StringFind(json, search);
+   if(key_pos < 0) return "";
+   int colon_pos = StringFind(json, ":", key_pos);
+   if(colon_pos < 0) return "";
+   int first_quote = StringFind(json, "\"", colon_pos + 1);
+   if(first_quote < 0) return "";
+   int second_quote = StringFind(json, "\"", first_quote + 1);
+   if(second_quote < 0) return "";
+   return StringSubstr(json, first_quote + 1, second_quote - first_quote - 1);
+}
+
+double ParseJsonDouble(string json, string key)
+{
+   string search = "\"" + key + "\"";
+   int key_pos = StringFind(json, search);
+   if(key_pos < 0) return 0.0;
+   int colon_pos = StringFind(json, ":", key_pos);
+   if(colon_pos < 0) return 0.0;
+   int start = colon_pos + 1;
+   int len = StringLen(json);
+   while(start < len)
+   {
+      ushort ch = StringGetCharacter(json, start);
+      if(ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') break;
+      start++;
+   }
+   int end = start;
+   while(end < len)
+   {
+      ushort ch = StringGetCharacter(json, end);
+      if(!((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+')) break;
+      end++;
+   }
+   return StringToDouble(StringSubstr(json, start, end - start));
+}
+
+double NormalizeVolume(const string symbol, double volume)
+{
+   double min_vol  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double max_vol  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step_vol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step_vol <= 0) return volume;
+   volume = MathMax(min_vol, MathMin(max_vol, volume));
+   volume = MathFloor(volume / step_vol) * step_vol;
+   int digits = 2;
+   if(step_vol == 1.0)      digits = 0;
+   else if(step_vol == 0.1) digits = 1;
+   else if(step_vol == 0.001) digits = 3;
+   return NormalizeDouble(volume, digits);
+}
+
+//+------------------------------------------------------------------+
 //|  Order-Polling: liest pending_order.json und führt Order aus     |
 //+------------------------------------------------------------------+
 void CheckPendingOrder()
 {
    string path = "pending_order.json";
-
    if(!FileIsExist(path, FILE_COMMON)) return;
 
-   int fh = FileOpen(path, FILE_READ|FILE_TXT|FILE_COMMON);
+   // Datei einlesen
+   int fh = FileOpen(path, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(fh == INVALID_HANDLE)
    {
-      Print("InvestApp: pending_order.json GEFUNDEN aber kann nicht geöffnet werden! Fehler: ", GetLastError());
+      Print("InvestApp: Fehler beim Öffnen pending_order.json: ", GetLastError());
       return;
    }
-
    string content = "";
    while(!FileIsEnding(fh))
       content += FileReadString(fh);
    FileClose(fh);
 
-   Print("InvestApp: pending_order.json gelesen, Länge=", StringLen(content), " Inhalt=", StringSubstr(content, 0, 120));
+   Print("InvestApp: JSON gelesen (", StringLen(content), " Zeichen): ", StringSubstr(content, 0, 120));
 
-   // Nur "pending" ausführen
-   if(StringFind(content, "\"pending\"") < 0)
+   // Status prüfen
+   string status = ParseJsonString(content, "status");
+   StringToLower(status);
+   if(status != "pending")
    {
-      Print("InvestApp: Status ist nicht 'pending' – überspringe. Inhalt: ", StringSubstr(content, 0, 80));
+      Print("InvestApp: Status='", status, "' – keine Aktion");
       return;
    }
 
-   // Alters-Check: Order älter als 30 Sekunden → ignorieren und auf "expired" setzen
+   // Alters-Check
    double created_at = ParseJsonDouble(content, "created_at");
    if(created_at > 0 && (double)TimeCurrent() - created_at > 30.0)
    {
-      Print("InvestApp: pending_order.json veraltet (>30s) – setze Status 'expired' und ignoriere Order");
-      string expired_content = content;
-      StringReplace(expired_content, "\"pending\"", "\"expired\"");
-      int fh_exp = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_COMMON);
-      if(fh_exp != INVALID_HANDLE)
-      {
-         FileWriteString(fh_exp, expired_content);
-         FileClose(fh_exp);
-      }
+      Print("InvestApp: Order veraltet (>30s) – setze 'expired'");
+      string upd = content;
+      StringReplace(upd, "\"pending\"", "\"expired\"");
+      int fw = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+      if(fw != INVALID_HANDLE) { FileWriteString(fw, upd); FileClose(fw); }
       return;
    }
 
+   // Felder parsen
    string symbol    = ParseJsonString(content, "symbol");
    string direction = ParseJsonString(content, "direction");
    double volume    = ParseJsonDouble(content, "volume");
    double sl        = ParseJsonDouble(content, "sl");
    double tp        = ParseJsonDouble(content, "tp");
+   string comment   = ParseJsonString(content, "comment");
+   StringToLower(direction);
 
-   if(symbol == "" || direction == "") return;
-
-   // Symbol in Market Watch aktivieren
-   if(!SymbolSelect(symbol, true))
-      Print("InvestApp: Symbol nicht in Market Watch verfügbar: ", symbol, " – versuche trotzdem");
-
-   // Aktuellen Bid/Ask-Preis holen (laut MQL5-Dokumentation für TRADE_ACTION_DEAL erforderlich)
-   double price = (direction == "buy") ? SymbolInfoDouble(symbol, SYMBOL_ASK)
-                                       : SymbolInfoDouble(symbol, SYMBOL_BID);
-   if(price <= 0.0)
+   if(symbol == "" || direction == "" || volume <= 0)
    {
-      Print("InvestApp: Ungültiger Preis für ", symbol, " (", direction, ") – Order abgebrochen");
+      Print("InvestApp: Pflichtfelder fehlen – symbol='", symbol, "' direction='", direction, "' volume=", volume);
       return;
    }
 
-   // Filling-Mode automatisch ermitteln (broker-kompatibel)
+   // Symbol aktivieren
+   if(!SymbolSelect(symbol, true))
+      Print("InvestApp: SymbolSelect fehlgeschlagen für ", symbol);
+
+   // Marktpreise
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   if(ask <= 0 || bid <= 0)
+   {
+      Print("InvestApp: Keine gültigen Preise für ", symbol, " ask=", ask, " bid=", bid);
+      return;
+   }
+
+   ENUM_ORDER_TYPE order_type;
+   double price;
+   if(direction == "buy")  { order_type = ORDER_TYPE_BUY;  price = ask; }
+   else                    { order_type = ORDER_TYPE_SELL; price = bid; }
+
+   // Volumen normalisieren
+   volume = NormalizeVolume(symbol, volume);
+
+   // Filling-Mode ermitteln
    long filling_mode = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   long exec_mode    = SymbolInfoInteger(symbol, SYMBOL_TRADE_EXEMODE);
    ENUM_ORDER_TYPE_FILLING type_filling;
-   if((filling_mode & SYMBOL_FILLING_IOC) != 0)
+   if((filling_mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
       type_filling = ORDER_FILLING_IOC;
-   else if((filling_mode & SYMBOL_FILLING_FOK) != 0)
+   else if((filling_mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
       type_filling = ORDER_FILLING_FOK;
-   else
+   else if(exec_mode != SYMBOL_TRADE_EXECUTION_MARKET)
       type_filling = ORDER_FILLING_RETURN;
+   else
+      type_filling = ORDER_FILLING_IOC;  // Fallback
 
    MqlTradeRequest request = {};
    MqlTradeResult  result  = {};
+   MqlTradeCheckResult check = {};
 
    request.action       = TRADE_ACTION_DEAL;
    request.symbol       = symbol;
    request.volume       = volume;
-   request.type         = (direction == "buy") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.type         = order_type;
    request.type_filling = type_filling;
-   request.price        = price;
-   request.sl           = sl;
-   request.tp           = tp;
+   request.price        = NormalizeDouble(price, digits);
+   request.sl           = NormalizeDouble(sl, digits);
+   request.tp           = NormalizeDouble(tp, digits);
    request.deviation    = 20;
    request.magic        = 20260324;
-   request.comment      = "InvestApp";
+   request.comment      = (comment != "") ? comment : "InvestApp";
+
+   // Vorab-Validierung
+   if(!OrderCheck(request, check))
+   {
+      Print("InvestApp OrderCheck FEHLER: retcode=", check.retcode, " comment=", check.comment);
+      return;
+   }
 
    bool sent = OrderSend(request, result);
+   bool success = sent && (result.retcode == TRADE_RETCODE_DONE ||
+                           result.retcode == TRADE_RETCODE_PLACED ||
+                           result.retcode == TRADE_RETCODE_DONE_PARTIAL);
+   string new_status = success ? "executed" : "failed";
 
-   // retcode 10008 (TRADE_RETCODE_PLACED) = Order platziert, wird noch ausgeführt → auch Erfolg
-   string status  = (sent && (result.retcode == 10009 || result.retcode == 10008)) ? "executed" : "failed";
+   if(success)
+      Print("InvestApp Order ERFOLG: ", symbol, " ", direction,
+            " Vol=", DoubleToString(volume,2), " Preis=", NormalizeDouble(price,digits),
+            " SL=", NormalizeDouble(sl,digits), " TP=", NormalizeDouble(tp,digits),
+            " Order=", result.order, " Deal=", result.deal);
+   else
+      Print("InvestApp Order FEHLER: retcode=", result.retcode,
+            " comment=", result.comment, " filling=", EnumToString(type_filling));
 
-   if(!sent || (result.retcode != 10009 && result.retcode != 10008))
-      Print("InvestApp OrderSend FEHLER: retcode=", result.retcode,
-            " comment=", result.comment,
-            " symbol=", symbol, " price=", price,
-            " volume=", volume, " sl=", sl, " tp=", tp,
-            " filling=", EnumToString(type_filling));
-
+   // JSON aktualisieren
    string updated = content;
-   StringReplace(updated, "\"pending\"", "\"" + status + "\"");
+   StringReplace(updated, "\"pending\"", "\"" + new_status + "\"");
    if(result.order > 0)
       StringReplace(updated, "\"status\"", "\"ticket\":" + IntegerToString(result.order) + ",\"status\"");
-   if(!sent || (result.retcode != 10009 && result.retcode != 10008))
+   if(!success)
       StringReplace(updated, "\"status\"", "\"retcode\":" + IntegerToString(result.retcode) + ",\"status\"");
 
-   fh = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_COMMON);
-   if(fh != INVALID_HANDLE)
-   {
-      FileWriteString(fh, updated);
-      FileClose(fh);
-   }
-
-   Print("InvestApp Order: ", symbol, " ", direction, " Preis=", price, " → ", status,
-         " retcode=", result.retcode, " ticket=", result.order);
+   fh = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(fh != INVALID_HANDLE) { FileWriteString(fh, updated); FileClose(fh); }
 }
 
-// Einfache JSON-Parser-Hilfsfunktionen für pending_order.json
-string ParseJsonString(string json, string key)
-{
-   string search = "\"" + key + "\": \"";
-   int pos = StringFind(json, search);
-   if(pos < 0)
-   {
-      search = "\"" + key + "\":\"";
-      pos = StringFind(json, search);
-   }
-   if(pos < 0) return "";
-   pos += StringLen(search);
-   int end = StringFind(json, "\"", pos);
-   if(end < 0) return "";
-   return StringSubstr(json, pos, end - pos);
-}
-
-double ParseJsonDouble(string json, string key)
-{
-   string search = "\"" + key + "\": ";
-   int pos = StringFind(json, search);
-   if(pos < 0)
-   {
-      search = "\"" + key + "\":";
-      pos = StringFind(json, search);
-   }
-   if(pos < 0) return 0.0;
-   pos += StringLen(search);
-   int end = pos;
-   int len = StringLen(json);
-   while(end < len)
-   {
-      ushort c = StringGetCharacter(json, end);
-      if(c != '.' && !(c >= '0' && c <= '9') && c != '-') break;
-      end++;
-   }
-   return StringToDouble(StringSubstr(json, pos, end - pos));
-}
 //+------------------------------------------------------------------+

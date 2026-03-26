@@ -29,7 +29,7 @@ _SECTIONS: dict[str, list[str]] = {
         "symbol_provider_max_file_age_minutes",
     ],
     "risk": [
-        "risk_per_trade", "max_daily_loss", "drawdown_enabled", "max_open_positions", "min_crv",
+        "risk_per_trade", "max_daily_loss", "max_open_positions", "min_crv",
         "atr_period", "atr_sl_multiplier", "atr_tp_multiplier", "min_confidence_score",
         "spread_filter_multiplier", "normal_spread_pips",
     ],
@@ -118,7 +118,6 @@ class Config:
         # risk
         "risk_per_trade": 0.01,
         "max_daily_loss": 0.03,
-        "drawdown_enabled": False,
         "max_open_positions": 3,
         "min_crv": 2.0,
         "atr_period": 14,
