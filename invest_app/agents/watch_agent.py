@@ -30,12 +30,14 @@ class WatchAgent:
         config: Any = None,
         simulation_agent: Optional[Any] = None,
         chart_exporter: Optional[Any] = None,
+        risk_agent: Optional[Any] = None,
     ) -> None:
         self.connector = connector
         self.db = db
         self._config = config
         self.simulation_agent = simulation_agent
         self.chart_exporter = chart_exporter
+        self.risk_agent = risk_agent
         self._pending_signals: list[dict] = []
         self._lock = threading.Lock()
 
@@ -110,6 +112,105 @@ class WatchAgent:
         open_trade_count = 0
         sl_updates = 0
         partial_exits = 0
+
+        # Positions-Überwachung: Breakeven + Trailing Stop
+        if self.db is not None and self.risk_agent is not None:
+            try:
+                open_trades = self.db.get_open_trades() if hasattr(self.db, "get_open_trades") else []
+                open_trade_count = len(open_trades)
+                for trade in open_trades:
+                    ticket = trade.get("mt5_ticket")
+                    symbol = trade.get("instrument") or trade.get("symbol")
+                    direction = trade.get("direction", "")
+                    entry_price = float(trade.get("entry_price", 0.0))
+                    current_sl = float(trade.get("sl", 0.0))
+                    take_profit = float(trade.get("tp", 0.0))
+
+                    if not ticket or not symbol or direction not in ("long", "short") or entry_price <= 0:
+                        continue
+
+                    # Aktuellen Preis holen
+                    tick = self.connector.get_tick(symbol) if hasattr(self.connector, "get_tick") else {}
+                    if isinstance(tick, dict):
+                        current_price = tick.get("bid", 0.0) if direction == "long" else tick.get("ask", 0.0)
+                    else:
+                        current_price = 0.0
+                    if not current_price:
+                        continue
+
+                    # ATR und EMA21 aus 5m-OHLCV berechnen
+                    atr = 0.0
+                    ema21 = None
+                    try:
+                        ohlcv = self.connector.get_ohlcv(symbol, "5m", 20)
+                        if ohlcv is not None and not ohlcv.empty and len(ohlcv) >= 14:
+                            highs = ohlcv["high"]
+                            lows = ohlcv["low"]
+                            closes = ohlcv["close"]
+                            tr = pd.concat([
+                                highs - lows,
+                                (highs - closes.shift(1)).abs(),
+                                (lows - closes.shift(1)).abs(),
+                            ], axis=1).max(axis=1)
+                            atr = float(tr.rolling(14).mean().iloc[-1])
+                            if len(ohlcv) >= 21:
+                                ema21 = float(closes.ewm(span=21).mean().iloc[-1])
+                    except Exception:
+                        pass
+
+                    if atr <= 0:
+                        continue
+
+                    sl_distance = abs(entry_price - current_sl)
+
+                    # Breakeven prüfen (vor Trailing Stop)
+                    if direction == "long":
+                        one_to_one = entry_price + sl_distance
+                        if current_price >= one_to_one and current_sl < entry_price:
+                            if hasattr(self.connector, "modify_position"):
+                                if self.connector.modify_position(ticket, entry_price):
+                                    current_sl = entry_price
+                                    sl_updates += 1
+                                    logger.info(
+                                        f"[Watch-Agent] Breakeven gesetzt: "
+                                        f"Ticket {ticket} SL → {entry_price:.5f}"
+                                    )
+                    elif direction == "short":
+                        one_to_one = entry_price - sl_distance
+                        if current_price <= one_to_one and current_sl > entry_price:
+                            if hasattr(self.connector, "modify_position"):
+                                if self.connector.modify_position(ticket, entry_price):
+                                    current_sl = entry_price
+                                    sl_updates += 1
+                                    logger.info(
+                                        f"[Watch-Agent] Breakeven gesetzt: "
+                                        f"Ticket {ticket} SL → {entry_price:.5f}"
+                                    )
+
+                    # Trailing Stop berechnen
+                    new_sl = self.risk_agent.calculate_trailing_stop(
+                        current_price=current_price,
+                        current_sl=current_sl,
+                        entry_price=entry_price,
+                        take_profit=take_profit,
+                        atr=atr,
+                        direction=direction,
+                        ema21=ema21,
+                    )
+
+                    # SL nur setzen wenn verbessert
+                    improved = (direction == "long" and new_sl > current_sl) or \
+                               (direction == "short" and new_sl < current_sl)
+                    if improved and hasattr(self.connector, "modify_position"):
+                        if self.connector.modify_position(ticket, new_sl):
+                            sl_updates += 1
+                            logger.info(
+                                f"[Watch-Agent] Trailing Stop aktualisiert: "
+                                f"Ticket {ticket} SL {current_sl:.5f} → {new_sl:.5f}"
+                            )
+            except Exception as e:
+                logger.error(f"[Watch-Agent] Positions-Monitoring Fehler: {e}")
+
         logger.info(
             f"[Watch-Agent] ✓ Check abgeschlossen | "
             f"Offene Trades geprüft: {open_trade_count} | "

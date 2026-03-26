@@ -406,22 +406,6 @@ class Orchestrator:
         self._kill_switch.clear()
         logger.info("Kill-Switch deaktiviert.")
 
-    def _monitor_open_positions(self) -> None:
-        """
-        Überwacht offene Positionen.
-        Nur Status-Logging und tägliches Loss-Limit – kein Partial-Exit oder Trailing-Stop.
-        Positions-Verwaltung gehört vollständig zum Watch-Agent.
-        """
-        if self._check_daily_loss_limit():
-            logger.warning("_monitor_open_positions: Daily-Loss-Limit erreicht.")
-            return
-        try:
-            open_trades = self.db.get_open_trades() if hasattr(self.db, "get_open_trades") else []
-            if open_trades:
-                logger.info(f"Offene Positionen: {len(open_trades)}")
-        except Exception as e:
-            logger.debug(f"Positions-Status nicht verfügbar: {e}")
-
     def _place_and_save_order(self, signal: Signal) -> None:
         """
         Fallback: Platziert eine Order direkt wenn kein Watch-Agent vorhanden.
@@ -536,14 +520,28 @@ class Orchestrator:
             for trade in db_open:
                 ticket = trade.get("mt5_ticket")
                 if ticket and ticket not in mt5_tickets:
-                    # Trade in MT5 geschlossen – DB aktualisieren
+                    # Echten Close-Preis und PnL aus MT5-Deal-History holen
+                    close_price = 0.0
+                    pnl = 0.0
+                    if hasattr(self.connector, "get_deal_by_ticket"):
+                        deal = self.connector.get_deal_by_ticket(ticket)
+                        if deal:
+                            close_price = deal.get("price", 0.0)
+                            pnl = deal.get("profit", 0.0)
+                        else:
+                            logger.warning(
+                                f"Deal-Daten für Ticket {ticket} nicht abrufbar – Fallback 0.0"
+                            )
                     self.db.update_trade_close(
                         ticket=ticket,
-                        close_price=trade.get("entry_price", 0.0),
-                        pnl=0.0,
-                        close_time=datetime.utcnow(),
+                        close_price=close_price,
+                        pnl=pnl,
+                        close_time=datetime.now(timezone.utc),
                     )
-                    logger.info(f"Position {ticket} in MT5 geschlossen – DB aktualisiert.")
+                    logger.info(
+                        f"Position {ticket} geschlossen: "
+                        f"Close-Preis={close_price:.5f}, PnL={pnl:.2f}"
+                    )
 
             self.db.update_performance()
 

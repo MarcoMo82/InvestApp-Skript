@@ -254,42 +254,6 @@ class RiskAgent(BaseAgent):
         # Standard Forex: 4 Nachkommastellen → Pip = 0.0001
         return 0.0001
 
-    def calculate_trailing_stop(
-        self,
-        current_price: float,
-        current_sl: float,
-        entry_price: float,
-        take_profit: float,
-        atr: float,
-        direction: str,
-        ema21: float,
-        swing_ref: float,
-    ) -> float:
-        """
-        Berechnet einen verbesserten Trailing Stop.
-
-        Logik (Long):
-          Kandidat = min(swing_ref, ema21 - atr, current_price - 1.5*atr)
-          Neuer SL nur wenn Kandidat > current_sl (SL verbessert sich)
-
-        Logik (Short):
-          Kandidat = max(swing_ref, ema21 + atr, current_price + 1.5*atr)
-          Neuer SL nur wenn Kandidat < current_sl
-
-        Returns:
-            Neuer SL-Wert (oder unveränderter current_sl wenn keine Verbesserung)
-        """
-        if direction == "long":
-            candidate = min(swing_ref, ema21 - atr, current_price - 1.5 * atr)
-            # Nur verbessern (SL nach oben ziehen), niemals unter Entry
-            candidate = max(candidate, entry_price) if candidate > current_sl else current_sl
-            return round(candidate, 6) if candidate > current_sl else current_sl
-        elif direction == "short":
-            candidate = max(swing_ref, ema21 + atr, current_price + 1.5 * atr)
-            candidate = min(candidate, entry_price) if candidate < current_sl else current_sl
-            return round(candidate, 6) if candidate < current_sl else current_sl
-        return current_sl
-
     @staticmethod
     def _calculate_swing_sl(
         ohlcv: Optional[pd.DataFrame], direction: str, entry_price: float

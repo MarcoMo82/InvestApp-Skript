@@ -222,6 +222,53 @@ class TestReconnect:
         assert connector._is_ipc_error(0) is False
 
 
+class TestGetDealByTicket:
+    def test_returns_none_when_not_connected(self):
+        """get_deal_by_ticket gibt None zurück wenn nicht verbunden."""
+        connector = _make_connector()
+        connector._connected = False
+        result = connector.get_deal_by_ticket(12345)
+        assert result is None
+
+    def test_returns_deal_data_on_success(self):
+        """get_deal_by_ticket liefert dict mit price und profit."""
+        connector = _make_connector()
+        connector._connected = True
+
+        fake_deal = SimpleNamespace(price=1.1050, profit=25.0, time=1700000000)
+        _mt5_mock.history_deals_get.return_value = [fake_deal]
+        _mt5_mock.history_deals_get.side_effect = None
+
+        result = connector.get_deal_by_ticket(12345)
+
+        assert result is not None
+        assert result["price"] == 1.1050
+        assert result["profit"] == 25.0
+        assert "time" in result
+
+    def test_returns_none_when_no_deals_found(self):
+        """get_deal_by_ticket gibt None zurück wenn keine Deals gefunden."""
+        connector = _make_connector()
+        connector._connected = True
+
+        _mt5_mock.history_deals_get.return_value = []
+        _mt5_mock.history_deals_get.side_effect = None
+
+        result = connector.get_deal_by_ticket(99999)
+        assert result is None
+
+    def test_returns_none_on_mt5_error(self):
+        """get_deal_by_ticket gibt None zurück bei MT5-Fehler."""
+        connector = _make_connector()
+        connector._connected = True
+
+        _mt5_mock.history_deals_get.return_value = None
+        _mt5_mock.history_deals_get.side_effect = None
+
+        result = connector.get_deal_by_ticket(12345)
+        assert result is None
+
+
 class TestDiagnose:
     def test_diagnose_returns_dict_with_required_keys(self, tmp_path):
         """diagnose() liefert dict mit allen erwarteten Keys."""

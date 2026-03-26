@@ -15,6 +15,7 @@ Stand: März 2026 | Zielgruppe: Trend-Agent, Volatility-Agent, Level-Agent, Entr
 6. [Technische Indikatoren](#6-technische-indikatoren)
 7. [Entry-Setups](#7-entry-setups)
 8. [Risikomanagement](#8-risikomanagement)
+8.5 [Stop Loss Hunt / Liquidity Sweep](#85-stop-loss-hunt--liquidity-sweep)
 9. [Zeitrahmen-Analyse (Multi-Timeframe)](#9-zeitrahmen-analyse-multi-timeframe)
 10. [Marktphasen & Volatilität](#10-marktphasen--volatilität)
 11. [Yahoo Finance — Datenverfügbarkeit](#11-yahoo-finance--datenverfügbarkeit)
@@ -1033,6 +1034,58 @@ SL = EMA(21) - Puffer (für Long)
 ```
 
 **Trailing-Regel:** Trailing Stop nur in eine Richtung (niemals zurückziehen). Erst trailing wenn Trade profitabel ist (mind. 1:1 CRV erreicht).
+
+---
+
+## 8.5 Stop Loss Hunt / Liquidity Sweep
+
+*Datum des Eintrags: 2026-03-25*
+
+### Was ist ein Stop Loss Hunt?
+
+Ein Stop Loss Hunt (auch: Liquidity Sweep, Stop Jagd) ist ein gezieltes Marktphänomen, bei dem institutionelle Marktteilnehmer (Smart Money, Market Maker) den Preis kurzzeitig in Bereiche treiben, wo viele Retail-Trader ihre Stop-Loss-Orders platziert haben. Wenn diese Stops ausgelöst werden, entstehen Marktorders – die Liquidität, die große Spieler brauchen, um eigene Positionen zu füllen oder abzubauen, ohne Slippage zu erleiden. Danach kehrt der Preis in der Regel schnell um.
+
+### Unterschied: Sweep vs. Run
+
+| Begriff | Beschreibung |
+|---|---|
+| **Liquidity Sweep** | Preis greift ein Level kurz an, triggert Stops, kehrt dann sofort um. Bestätigt durch: Kerze schließt zurück in alte Range. |
+| **Liquidity Run** | Preis läuft in Trendrichtung von einem Liquiditätslevel zum nächsten – ohne Umkehr. Trend setzt sich fort. |
+
+### Erkennungsmerkmale
+
+1. **Langer Wick / Docht** – Preis spikt kurz über/unter ein bekanntes Level (Swing High/Low, Round Number, S&R-Zone) und schließt sofort zurück
+2. **Falschausbruch** – scheinbarer Breakout der sich nicht bestätigt; Preis kehrt innerhalb von 1–3 Kerzen zurück
+3. **Plötzliche Volatilitätsspitze** – unerwarteter, schneller Move gefolgt von sofortiger Umkehr
+4. **Typische Zonen** – über Double Tops/Bottoms, unter Swing-Lows, um Trendlinien, an psychologischen Runden Nummern
+
+### Typische Stop-Platzierungen der Masse (= Jagdziele)
+
+- Knapp unter Swing-Lows (Long-Stops)
+- Knapp über Swing-Highs (Short-Stops)
+- Direkt unter/über runden Zahlen (1.1000, 1.0800 etc.)
+- Unter horizontalen Support-Zonen
+- Unter/über Trendlinien
+
+### Schutzstrategien für InvestApp
+
+1. **ATR-basierter SL** (bereits implementiert) – verhindert Placement an offensichtlichen Masse-Levels
+2. **Swing-SL mit Puffer** (bereits implementiert) – 2 Pips Abstand über/unter Swing
+3. **Kein SL an runden Zahlen** – SL mindestens 5–10 Pips von Round Numbers entfernt
+4. **Warten auf Sweep-Bestätigung** – Entry erst nach bestätigtem Stop Hunt: Wick sichtbar + Kerze schließt zurück in Range + Folgekerze in Signalrichtung
+5. **Stop Hunt als Entry-Signal nutzen** – Wenn bekannte Liquiditätszone kurz durchbrochen und sofort umgekehrt wird → potenzieller Entry in Gegenrichtung
+
+### Implementierungs-Idee (zukünftig)
+
+- **Stop Hunt Detektor im Entry-Agent**: Prüfen ob aktuelle Kerze einen langen Wick über/unter letztes Swing-Level hat UND innerhalb der Kerze zurückschließt → `entry_type = "stop_hunt_reversal"` mit erhöhtem Confidence-Bonus
+- **SL-Placement-Regel**: SL nie an Round Number, immer auf nächsten ATR-Level
+
+### Quellen
+
+- ICT Liquidity Sweep vs. Run: https://smartmoneyict.com/liquidity-sweep-vs-liquidity-run/
+- Stop Hunt Erkennung: https://medium.com/@yavuzakbay/stop-hunts-in-financial-markets-789a240f64f3
+- Stop Hunting Strategie: https://thetradinganalyst.com/stop-hunting/
+- Vermeidung: https://acy.com/en/market-news/education/market-education-trading-psychology-stop-hunts-traps-j-o-20250822-111101/
 
 ---
 

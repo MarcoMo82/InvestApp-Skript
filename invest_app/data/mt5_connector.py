@@ -308,34 +308,6 @@ class MT5Connector:
         logger.info(f"Position {ticket} geschlossen (Lot: {volume}).")
         return True
 
-    def modify_position(self, ticket: int, new_sl: float, new_tp: Optional[float] = None) -> bool:
-        """Ändert SL (und optional TP) einer offenen Position via TRADE_ACTION_SLTP."""
-        self._require_connection()
-
-        position = mt5.positions_get(ticket=ticket)
-        if not position:
-            logger.warning(f"modify_position: Position {ticket} nicht gefunden.")
-            return False
-
-        pos = position[0]
-        tp = new_tp if new_tp is not None else pos.tp
-
-        request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "symbol": pos.symbol,
-            "position": ticket,
-            "sl": float(new_sl),
-            "tp": float(tp),
-        }
-
-        result = mt5.order_send(request)
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            logger.error(f"modify_position {ticket} fehlgeschlagen: {result}")
-            return False
-
-        logger.info(f"Position {ticket}: SL → {new_sl}, TP → {tp}")
-        return True
-
     def get_news(self, hours_back: int = 4) -> list[dict]:
         """Ruft Nachrichten aus MetaTrader 5 ab."""
         if not MT5_AVAILABLE or not self._connected:
@@ -452,6 +424,34 @@ class MT5Connector:
 
         logger.debug(f"SL für Ticket {ticket} → {new_sl:.5f}")
         return True
+
+    def get_deal_by_ticket(self, ticket: int) -> Optional[dict]:
+        """
+        Holt abschließende Deal-Daten aus MT5-History für ein Position-Ticket.
+
+        Returns:
+            dict mit 'price' und 'profit', oder None wenn nicht abrufbar.
+        """
+        if not self._connected:
+            return None
+        try:
+            from datetime import timedelta
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(days=30)
+            deals = mt5.history_deals_get(date_from, date_to, position=ticket)
+            if deals is None or len(deals) == 0:
+                logger.warning(f"[MT5] Keine Deal-Daten für Ticket {ticket} gefunden.")
+                return None
+            # Letzten Deal nehmen (Closing Deal)
+            closing_deal = deals[-1]
+            return {
+                "price": float(closing_deal.price),
+                "profit": float(closing_deal.profit),
+                "time": datetime.utcfromtimestamp(closing_deal.time),
+            }
+        except Exception as e:
+            logger.warning(f"[MT5] get_deal_by_ticket({ticket}) Fehler: {e}")
+            return None
 
     def close_partial_position(self, ticket: int, lot_size: float) -> bool:
         """Schließt einen Teil einer offenen Position."""

@@ -150,6 +150,116 @@ class TestEntryConditionMarket:
         assert agent._check_entry_condition(signal, ohlcv) is True
 
 
+def _make_ohlcv_atr(n: int = 20, price: float = 1.1000, atr_range: float = 0.002) -> pd.DataFrame:
+    """OHLCV mit realistischer ATR für Trailing-Stop-Tests."""
+    return pd.DataFrame({
+        "open": [price] * n,
+        "high": [price + atr_range] * n,
+        "low": [price - atr_range] * n,
+        "close": [price] * n,
+        "volume": [1000] * n,
+    })
+
+
+class TestBreakevenLogic:
+    def test_breakeven_set_when_1to1_reached_long(self):
+        """Long: Preis hat 1:1 CRV erreicht → SL wird auf Entry-Preis gesetzt."""
+        connector = MagicMock()
+        connector.get_tick.return_value = {"bid": 1.1040, "ask": 1.1042}
+        connector.get_ohlcv.return_value = _make_ohlcv_atr(n=20, price=1.1020, atr_range=0.0010)
+        connector.modify_position.return_value = True
+
+        db = MagicMock()
+        db.get_open_trades.return_value = [{
+            "mt5_ticket": 111,
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "sl": 1.0980,  # SL 20 Pips unter Entry
+            "tp": 1.1040,
+        }]
+
+        risk_agent = MagicMock()
+        risk_agent.calculate_trailing_stop.return_value = 1.0980  # kein Trailing-Update
+
+        agent = WatchAgent(connector=connector, db=db, risk_agent=risk_agent)
+        agent.check_and_execute()
+
+        # modify_position muss mit entry_price=1.1000 aufgerufen worden sein
+        connector.modify_position.assert_called_once_with(111, 1.1000)
+
+    def test_breakeven_not_set_when_sl_already_above_entry(self):
+        """Long: SL bereits über Entry-Preis → kein weiterer Breakeven-Aufruf."""
+        connector = MagicMock()
+        connector.get_tick.return_value = {"bid": 1.1040, "ask": 1.1042}
+        connector.get_ohlcv.return_value = _make_ohlcv_atr(n=20, price=1.1020, atr_range=0.0010)
+        connector.modify_position.return_value = True
+
+        db = MagicMock()
+        db.get_open_trades.return_value = [{
+            "mt5_ticket": 222,
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "sl": 1.1005,  # SL bereits über Entry → Breakeven schon gesetzt
+            "tp": 1.1040,
+        }]
+
+        risk_agent = MagicMock()
+        risk_agent.calculate_trailing_stop.return_value = 1.1005
+
+        agent = WatchAgent(connector=connector, db=db, risk_agent=risk_agent)
+        agent.check_and_execute()
+
+        # modify_position darf nicht für Breakeven aufgerufen werden
+        for call in connector.modify_position.call_args_list:
+            assert call.args[1] != 1.1000
+
+    def test_trailing_stop_updates_sl_when_improved_long(self):
+        """Long: Trailing Stop verbessert SL → modify_position wird aufgerufen."""
+        connector = MagicMock()
+        connector.get_tick.return_value = {"bid": 1.1060, "ask": 1.1062}
+        connector.get_ohlcv.return_value = _make_ohlcv_atr(n=20, price=1.1040, atr_range=0.0010)
+        connector.modify_position.return_value = True
+
+        db = MagicMock()
+        db.get_open_trades.return_value = [{
+            "mt5_ticket": 333,
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "sl": 1.1010,  # SL schon über Entry
+            "tp": 1.1040,
+        }]
+
+        new_trailing_sl = 1.1030
+        risk_agent = MagicMock()
+        risk_agent.calculate_trailing_stop.return_value = new_trailing_sl
+
+        agent = WatchAgent(connector=connector, db=db, risk_agent=risk_agent)
+        agent.check_and_execute()
+
+        connector.modify_position.assert_called_once_with(333, new_trailing_sl)
+
+    def test_trailing_stop_skipped_without_risk_agent(self):
+        """Kein risk_agent → kein Positions-Monitoring, kein Absturz."""
+        connector = MagicMock()
+        db = MagicMock()
+        db.get_open_trades.return_value = [{
+            "mt5_ticket": 444,
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_price": 1.1000,
+            "sl": 1.0980,
+            "tp": 1.1040,
+        }]
+
+        agent = WatchAgent(connector=connector, db=db, risk_agent=None)
+        agent.check_and_execute()  # darf nicht crashen
+
+        connector.modify_position.assert_not_called()
+
+
 class TestCheckAndExecute:
     def test_executed_signal_removed_from_pending(self):
         """Nach Ausführung wird Signal aus der Pending-Liste entfernt."""
