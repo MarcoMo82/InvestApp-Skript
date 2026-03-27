@@ -61,6 +61,14 @@ struct SessionConfig
    bool trade_asian;     // Standard: false
 };
 
+struct SmartTpConfig
+{
+   bool   enabled;
+   int    activate_minutes_before_rollover; // Standard: 60
+   int    range_candles_lookback;           // Standard: 12
+   int    range_buffer_pips;                // Standard: 2
+};
+
 struct AppConfig
 {
    RiskConfig            risk;
@@ -69,6 +77,7 @@ struct AppConfig
    TradeManagementConfig trade_management;
    TradeExitConfig       trade_exit;
    SessionConfig         session;
+   SmartTpConfig         smart_tp;
    string                last_updated;
    string                version;
 };
@@ -235,6 +244,11 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.session.trade_new_york  = true;
    cfg.session.trade_asian     = false;
 
+   cfg.smart_tp.enabled                          = true;
+   cfg.smart_tp.activate_minutes_before_rollover = 60;
+   cfg.smart_tp.range_candles_lookback           = 12;
+   cfg.smart_tp.range_buffer_pips                = 2;
+
    cfg.last_updated = "";
    cfg.version      = "0.0";
 }
@@ -309,6 +323,16 @@ void _ParseConfig(string json, AppConfig &cfg)
       cfg.session.trade_london    = _JsonGetBool(sec, "trade_london",   cfg.session.trade_london);
       cfg.session.trade_new_york  = _JsonGetBool(sec, "trade_new_york", cfg.session.trade_new_york);
       cfg.session.trade_asian     = _JsonGetBool(sec, "trade_asian",    cfg.session.trade_asian);
+   }
+
+   // Abschnitt "smart_tp"
+   sec = _JsonGetSection(json, "smart_tp");
+   if(sec != "")
+   {
+      cfg.smart_tp.enabled                          = _JsonGetBool(sec, "enabled",                          cfg.smart_tp.enabled);
+      cfg.smart_tp.activate_minutes_before_rollover = _JsonGetInt (sec, "activate_minutes_before_rollover", cfg.smart_tp.activate_minutes_before_rollover);
+      cfg.smart_tp.range_candles_lookback           = _JsonGetInt (sec, "range_candles_lookback",           cfg.smart_tp.range_candles_lookback);
+      cfg.smart_tp.range_buffer_pips                = _JsonGetInt (sec, "range_buffer_pips",                cfg.smart_tp.range_buffer_pips);
    }
 }
 

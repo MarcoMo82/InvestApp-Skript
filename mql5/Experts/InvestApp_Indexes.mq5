@@ -30,6 +30,7 @@ int       SYMBOL_COUNT = 5;
 datetime  g_lastAnalysisTime   = 0;
 datetime  g_lastMarketDataWrite = 0;
 AppConfig g_config;
+double    g_last_atr = 0.0;
 
 //+------------------------------------------------------------------+
 //| Expert Advisor initialisieren                                     |
@@ -62,17 +63,12 @@ void OnTimer()
 {
    datetime now = TimeCurrent();
 
-   // Throttling: vollständige Analyse nur alle AnalysisIntervalSeconds
-   if((int)(now - g_lastAnalysisTime) < AnalysisIntervalSeconds)
-      return;
-
-   g_lastAnalysisTime = now;
-
-   // Alle Symbole analysieren
-   for(int i = 0; i < SYMBOL_COUNT; i++)
+   // Hauptanalyse – Throttling auf AnalysisIntervalSeconds
+   if((int)(now - g_lastAnalysisTime) >= AnalysisIntervalSeconds)
    {
-      string symbol = SYMBOLS[i];
-      AnalyzeSymbol(symbol);
+      g_lastAnalysisTime = now;
+      for(int i = 0; i < SYMBOL_COUNT; i++)
+         AnalyzeSymbol(SYMBOLS[i]);
    }
 
    // market_data.json alle 15 Minuten für Python Level Agent schreiben
@@ -82,11 +78,22 @@ void OnTimer()
       g_lastMarketDataWrite = TimeCurrent();
    }
 
-   // Trade-Begleitung für offene Positionen
-   // TODO: TradeManagement.ManageTrades()
+   // Trade-Management (Breakeven → Struktur-Trailing) – alle 30s
+   static datetime s_lastTradeManage = 0;
+   if((int)(TimeCurrent() - s_lastTradeManage) >= 30)
+   {
+      CleanupClosedPositions();
+      ManageTrades(SYMBOLS, SYMBOL_COUNT, g_config);
+      s_lastTradeManage = TimeCurrent();
+   }
 
-   // Status schreiben
-   // TODO: ea_status.json aktualisieren
+   // Rollover-Management – alle 60s
+   static datetime s_lastRolloverCheck = 0;
+   if((int)(TimeCurrent() - s_lastRolloverCheck) >= 60)
+   {
+      ManageRollover(SYMBOLS, SYMBOL_COUNT, g_config);
+      s_lastRolloverCheck = TimeCurrent();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -150,6 +157,7 @@ void AnalyzeSymbol(string symbol)
       LOG_W("InvestApp_Indexes", symbol, "Risiko: " + risk.reject_reason);
       return;
    }
+   g_last_atr = risk.atr_value;
 
    LOG_I("InvestApp_Indexes", symbol,
          "Signal bereit | " + signal.summary + " | Lots=" + DoubleToString(risk.lots, 2));
@@ -174,6 +182,19 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest& request,
                         const MqlTradeResult& result)
 {
-   // TODO: Neue Positionen in TradeManagement registrieren
-   // TODO: Geschlossene Positionen in trade_log.json schreiben
+   // Neue Position registrieren (Entry-Deal)
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD
+      && (trans.deal_type == DEAL_TYPE_BUY || trans.deal_type == DEAL_TYPE_SELL)
+      && trans.position > 0)
+   {
+      if(HistoryDealSelect(trans.deal))
+      {
+         ENUM_DEAL_ENTRY deal_entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+         if(deal_entry == DEAL_ENTRY_IN && PositionSelectByTicket(trans.position))
+         {
+            double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+            RegisterPosition(trans.position, open_price, g_last_atr);
+         }
+      }
+   }
 }

@@ -243,5 +243,11 @@
     "pattern_threshold": 10,
     "confidence_adjustment_step": 5,
     "max_confidence_threshold": 95
+  },
+  "smart_tp": {
+    "enabled": true,
+    "activate_minutes_before_rollover": 60,
+    "range_candles_lookback": 12,
+    "range_buffer_pips": 2
   }
 }
