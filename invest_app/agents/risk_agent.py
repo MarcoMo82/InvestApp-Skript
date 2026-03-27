@@ -145,6 +145,8 @@ class RiskAgent(BaseAgent):
                 stop_loss = min(atr_stop, tech_sl)  # kleinerer Wert = weiter unten = mehr Puffer
             else:
                 stop_loss = atr_stop
+            # Runde Zahlen: SL 10 Pips weiter verschieben wenn zu nah an xx00/x000-Niveau
+            stop_loss = self._adjust_sl_for_round_numbers(stop_loss, direction, pip_size)
             sl_distance = entry_price - stop_loss
             atr_tp = atr * atr_tp_multiplier
             crv_tp = sl_distance * self.min_crv
@@ -155,6 +157,8 @@ class RiskAgent(BaseAgent):
                 stop_loss = max(atr_stop, tech_sl)  # größerer Wert = weiter oben = mehr Puffer
             else:
                 stop_loss = atr_stop
+            # Runde Zahlen: SL 10 Pips weiter verschieben wenn zu nah an xx00/x000-Niveau
+            stop_loss = self._adjust_sl_for_round_numbers(stop_loss, direction, pip_size)
             sl_distance = stop_loss - entry_price
             atr_tp = atr * atr_tp_multiplier
             crv_tp = sl_distance * self.min_crv
@@ -272,6 +276,26 @@ class RiskAgent(BaseAgent):
 
         # Standard Forex: 4 Nachkommastellen → Pip = 0.0001
         return 0.0001
+
+    @staticmethod
+    def _adjust_sl_for_round_numbers(sl: float, direction: str, pip_size: float) -> float:
+        """
+        Schützt den SL vor Stop-Hunt an runden Zahlen (xx00 / x000 Pip-Niveau).
+        Falls SL innerhalb von 10 Pips einer runden Zahl liegt, wird er
+        10 Pips weiter vom Entry verschoben.
+        """
+        pips_10 = 10 * pip_size
+
+        for factor in (pip_size * 1000, pip_size * 100):
+            rounded = round(sl / factor) * factor
+            if abs(sl - rounded) <= pips_10:
+                if direction == "long":
+                    sl = rounded - pips_10
+                else:
+                    sl = rounded + pips_10
+                break
+
+        return sl
 
     def _calculate_swing_sl(
         self,
