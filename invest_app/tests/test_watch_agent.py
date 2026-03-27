@@ -102,7 +102,7 @@ class TestEntryConditionRejection:
         ohlcv.at[ohlcv.index[-1], "open"] = 1.0990
         ohlcv.at[ohlcv.index[-1], "close"] = 1.1010  # close > open
         agent = WatchAgent(connector=_make_connector(ohlcv))
-        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "buy"}
+        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "long"}
         assert agent._check_entry_condition(signal, ohlcv) is True
 
     def test_rejection_buy_bearish_candle_no_entry(self):
@@ -112,7 +112,7 @@ class TestEntryConditionRejection:
         ohlcv.at[ohlcv.index[-1], "open"] = 1.1010
         ohlcv.at[ohlcv.index[-1], "close"] = 1.0990  # close < open
         agent = WatchAgent(connector=_make_connector(ohlcv))
-        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "buy"}
+        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "long"}
         assert agent._check_entry_condition(signal, ohlcv) is False
 
     def test_rejection_sell_bearish_candle(self):
@@ -122,7 +122,7 @@ class TestEntryConditionRejection:
         ohlcv.at[ohlcv.index[-1], "open"] = 1.1010
         ohlcv.at[ohlcv.index[-1], "close"] = 1.0990  # close < open
         agent = WatchAgent(connector=_make_connector(ohlcv))
-        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "sell"}
+        signal = {"instrument": "EURUSD", "entry_type": "rejection", "direction": "short"}
         assert agent._check_entry_condition(signal, ohlcv) is True
 
 

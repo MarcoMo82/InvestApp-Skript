@@ -84,7 +84,6 @@ class Orchestrator:
         self._scheduler: Optional[BackgroundScheduler] = None
         self._kill_switch = threading.Event()
         self._cycle_count = 0
-        self._daily_pnl = 0.0
         self._daily_loss_triggered: bool = False
         self._last_cycle_date: Optional[object] = None
 
@@ -276,8 +275,8 @@ class Orchestrator:
         # 2. Trend-Analyse
         trend_result = self.trend_agent.run({"symbol": symbol, "ohlcv": ohlcv_htf})
         direction = trend_result.get("direction", "neutral")
-        if direction in ("neutral", "sideways"):
-            logger.debug(f"{symbol}: Kein klarer Trend ({direction})")
+        if direction in ("neutral", "sideways") or trend_result.get("strength_score", 10) <= 4:
+            logger.debug(f"{symbol}: Schwacher/kein Trend (direction={direction}, score={trend_result.get('strength_score')})")
             return None
 
         # P2.2: Asian-Session-Block – kein Trend-Trading in der Asian Session
@@ -576,33 +575,6 @@ class Orchestrator:
             return True
         except Exception as e:
             logger.error(f"Daily drawdown check Fehler: {e}")
-            return True  # Im Fehlerfall: weitermachen
-
-    def _check_daily_loss_limit(self) -> bool:
-        """
-        Prüft ob das tägliche Verlustlimit noch nicht überschritten wurde.
-
-        Returns:
-            True  → Trading erlaubt
-            False → Limit überschritten, Trading stoppen
-        """
-        try:
-            daily_pnl = self.db.get_daily_pnl()
-            account_balance = (
-                self.connector.get_account_balance()
-                if hasattr(self.connector, "get_account_balance")
-                else 10000.0
-            )
-            max_loss = account_balance * self.config.max_daily_loss
-
-            if daily_pnl < -max_loss:
-                logger.warning(
-                    f"Daily Loss Limit erreicht: {daily_pnl:.2f} (Limit: -{max_loss:.2f})"
-                )
-                return False  # Stoppe Trading
-            return True
-        except Exception as e:
-            logger.error(f"Daily loss check Fehler: {e}")
             return True  # Im Fehlerfall: weitermachen
 
     def _monitor_open_positions(self) -> None:

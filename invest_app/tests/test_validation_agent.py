@@ -42,7 +42,7 @@ class TestMTFConfluence:
         assert "details" in mtf
 
     def test_triple_confluence_score(self):
-        """5–6 Punkte → triple_confluence, modifier = +0.35."""
+        """5–6 Punkte → triple_confluence, modifier = 1.35."""
         agent = _make_agent()
         results = _make_full_agent_results(
             trend_score=8, level_score=80, entry_confidence=0.7,
@@ -51,10 +51,10 @@ class TestMTFConfluence:
         mtf = agent._calculate_mtf_confluence(results)
         assert mtf["confluence_score"] >= 5
         assert mtf["label"] == "triple_confluence"
-        assert mtf["modifier"] == pytest.approx(0.35)
+        assert mtf["modifier"] == pytest.approx(1.35)
 
     def test_dual_confluence_score(self):
-        """3–4 Punkte → dual_confluence, modifier = +0.15."""
+        """3–4 Punkte → dual_confluence, modifier = 1.15."""
         agent = _make_agent()
         # Nur 3 Punkte: Trend ok, Level ok, Macro ok; Entry + Session + RSI nicht
         results = {
@@ -67,10 +67,10 @@ class TestMTFConfluence:
         mtf = agent._calculate_mtf_confluence(results)
         assert mtf["confluence_score"] in (3, 4)
         assert mtf["label"] == "dual_confluence"
-        assert mtf["modifier"] == pytest.approx(0.15)
+        assert mtf["modifier"] == pytest.approx(1.15)
 
     def test_weak_confluence_score(self):
-        """1–2 Punkte → weak_confluence, modifier = 0.0."""
+        """1–2 Punkte → weak_confluence, modifier = 1.0."""
         agent = _make_agent()
         results = {
             "trend": {"strength_score": 5},  # nicht ok (< 7)
@@ -83,10 +83,10 @@ class TestMTFConfluence:
         # RSI neutral +1, Session +1 = 2 Punkte
         assert mtf["confluence_score"] in (1, 2)
         assert mtf["label"] == "weak_confluence"
-        assert mtf["modifier"] == pytest.approx(0.0)
+        assert mtf["modifier"] == pytest.approx(1.0)
 
     def test_no_confluence_score(self):
-        """0 Punkte → no_confluence, modifier = -0.5."""
+        """0 Punkte → no_confluence, modifier = 0.5 (×0.5 Multiplikation)."""
         agent = _make_agent()
         results = {
             "trend": {"strength_score": 3},
@@ -98,7 +98,7 @@ class TestMTFConfluence:
         mtf = agent._calculate_mtf_confluence(results)
         assert mtf["confluence_score"] == 0
         assert mtf["label"] == "no_confluence"
-        assert mtf["modifier"] == pytest.approx(-0.5)
+        assert mtf["modifier"] == pytest.approx(0.5)
 
     def test_rsi_neutral_adds_point(self):
         """RSI zwischen 30–70 → +1 Punkt."""
@@ -163,7 +163,7 @@ class TestMTFConfluence:
         assert mtf["label"] in ("triple_confluence", "dual_confluence", "weak_confluence", "no_confluence")
 
     def test_no_confluence_reduces_score(self):
-        """no_confluence modifier = -0.5 reduziert den Score."""
+        """no_confluence modifier = 0.5 halbiert den Score (Multiplikation)."""
         agent = _make_agent()
         # Alle Kriterien schlecht → no_confluence
         results = {
@@ -174,4 +174,4 @@ class TestMTFConfluence:
             "macro": {"trading_allowed": False},
         }
         mtf = agent._calculate_mtf_confluence(results)
-        assert mtf["modifier"] < 0
+        assert mtf["modifier"] < 1.0

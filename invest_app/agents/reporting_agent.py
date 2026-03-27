@@ -76,7 +76,7 @@ class ReportingAgent(BaseAgent):
 
         for i, signal in enumerate(signals, start=1):
             direction_icon = "🟢" if str(signal.direction) == "long" else "🔴"
-            status_text = "✅ FREIGEGEBEN" if signal.status == SignalStatus.APPROVED else "❌ VERWORFEN"
+            status_text = "✅ FREIGEGEBEN"
 
             lines.extend([
                 f"## #{i} {direction_icon} {signal.instrument} – {str(signal.direction).upper()}",
