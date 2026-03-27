@@ -95,7 +95,6 @@ class MacroAgent(BaseAgent):
         all_news = (news_items + market_news + mt5_news)[:10]
 
         if not all_news:
-            self.logger.warning(f"Keine News für {symbol} – Makro-Analyse mit Standardwerten.")
             return self._default_result(symbol, "Keine News verfügbar.")
 
         # News-Text für Prompt aufbereiten
@@ -231,12 +230,32 @@ class MacroAgent(BaseAgent):
             self.logger.warning(f"VIX-Abruf fehlgeschlagen: {e} – Sentiment: neutral")
             return "neutral"
 
-    @staticmethod
-    def _default_result(symbol: str, reason: str) -> dict:
+    def _default_result(self, symbol: str, reason: str) -> dict:
+        """Standardergebnis bei fehlender Datengrundlage.
+        trading_allowed richtet sich nach macro_unknown_risk_blocks_trading (config)."""
+        try:
+            from config import config as _cfg
+            blocks = getattr(_cfg, "macro_unknown_risk_blocks_trading", True)
+        except Exception:
+            blocks = True
+
+        trading_allowed = not blocks
+        if symbol:
+            if trading_allowed:
+                self.logger.info(
+                    f"Keine News für {symbol} – UNKNOWN Event-Risiko, Trading erlaubt "
+                    f"(macro_unknown_risk_blocks_trading=false)"
+                )
+            else:
+                self.logger.warning(
+                    f"Keine News für {symbol} – UNKNOWN Event-Risiko blockiert Trading "
+                    f"(macro_unknown_risk_blocks_trading=true)."
+                )
+
         return {
             "macro_bias": "neutral",
             "event_risk": "unknown",
-            "trading_allowed": False,
+            "trading_allowed": trading_allowed,
             "key_themes": [],
             "reasoning": f"Standardwerte verwendet: {reason}",
             "symbol": symbol,

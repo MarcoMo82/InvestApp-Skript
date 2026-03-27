@@ -72,6 +72,7 @@ _SECTIONS: dict[str, list[str]] = {
         "simulation_trigger_after_watch_cycles", "simulation_symbol",
         "simulation_direction", "simulation_lot_size", "startup_analysis_enabled",
         "cycle_log_enabled", "cycle_log_dir",
+        "macro_unknown_risk_blocks_trading",
     ],
     "mt5": [
         "mt5_server", "mt5_common_files_path", "mt5_symbols_file", "mt5_order_file",
@@ -230,6 +231,7 @@ class Config:
         "startup_analysis_enabled": True,
         "cycle_log_enabled": True,
         "cycle_log_dir": "logs/cycles",
+        "macro_unknown_risk_blocks_trading": False,
         # mt5
         "mt5_server": "",
         "mt5_common_files_path": "",

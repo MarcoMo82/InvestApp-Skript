@@ -155,7 +155,12 @@ def print_symbol_analysis(
         approved = bool(macro.get("trading_allowed", True))
         ok = _CHECK if approved else _CROSS
         suffix = "" if approved else f"  {_CROSS} ABGEBROCHEN"
-        lines.append(("macro", f"Macro:      Bias={bias}  Event-Risiko={risk}  {ok} freigegeben{suffix}", approved))
+        # Sonderfall: UNKNOWN Event-Risiko aber Trading freigegeben (macro_unknown_risk_blocks_trading=false)
+        if risk == "UNKNOWN" and approved:
+            warn = " ⚠️" if _UTF8 else " [!]"
+            lines.append(("macro", f"Macro:      Bias={bias}  Event-Risiko={risk}{warn}  {ok} freigegeben (mit Vorbehalt)", approved))
+        else:
+            lines.append(("macro", f"Macro:      Bias={bias}  Event-Risiko={risk}  {ok} freigegeben{suffix}", approved))
 
     # Trend
     trend = agent_results.get("trend") or {}

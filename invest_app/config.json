@@ -110,7 +110,8 @@
     "news_block_minutes_before": 30,
     "news_block_minutes_after": 30,
     "cycle_log_enabled": true,
-    "cycle_log_dir": "logs/cycles"
+    "cycle_log_dir": "logs/cycles",
+    "macro_unknown_risk_blocks_trading": false
   },
   "mt5": {
     "mt5_server": "",
