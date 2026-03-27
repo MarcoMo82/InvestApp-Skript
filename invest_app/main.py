@@ -70,6 +70,37 @@ def build_connector():
     return connector
 
 
+def _init_mt5_trade_connector(config):
+    """
+    Initialisiert einen MT5Connector für Order-Execution – unabhängig vom Daten-Connector.
+    Falls MT5 nicht erreichbar: None + WARNING (kein harter Fehler, Lazy Reconnect im Watch Agent).
+    """
+    try:
+        from data.mt5_connector import MT5_AVAILABLE, MT5Connector
+        if not MT5_AVAILABLE or not config.mt5_login:
+            logger.info("[Init] MT5 nicht verfügbar oder kein Login konfiguriert – kein Trade-Connector.")
+            return None
+        connector = MT5Connector(
+            login=config.mt5_login,
+            password=config.mt5_password,
+            server=config.mt5_server,
+            path=config.mt5_path,
+            config=config,
+        )
+        if connector.connect():
+            logger.info("[Init] MT5 Trade-Connector aktiv (unabhängig vom Daten-Connector).")
+            return connector
+        else:
+            logger.warning(
+                "[Init] MT5 Trade-Connector: Verbindung fehlgeschlagen – "
+                "Watch Agent startet ohne Trade-Connector (Lazy Reconnect aktiv)."
+            )
+            return None
+    except Exception as e:
+        logger.warning(f"[Init] MT5 Trade-Connector Fehler: {e} – Watch Agent startet ohne Trade-Connector.")
+        return None
+
+
 def build_scanner(connector, symbol_provider=None):
     """Baut den ScannerAgent auf wenn aktiviert."""
     if not config.scanner_enabled:
@@ -104,14 +135,10 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         order_db = OrderDB(db_path=order_db_path)
         logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
 
-    # Trade-Connector: nur MT5Connector darf place_market_order aufrufen
-    try:
-        from data.mt5_connector import MT5_AVAILABLE, MT5Connector
-        trade_connector = connector if (MT5_AVAILABLE and isinstance(connector, MT5Connector)) else None
-    except Exception:
-        trade_connector = None
+    # Trade-Connector: immer unabhängig vom Daten-Connector initialisieren
+    trade_connector = _init_mt5_trade_connector(config)
     if trade_connector is None:
-        logger.warning("[Init] Kein MT5Connector verfügbar – Watch Agent kann keine Orders platzieren.")
+        logger.warning("[Init] Kein MT5 Trade-Connector – Watch Agent startet ohne Order-Execution (Lazy Reconnect aktiv).")
 
     # Simulation Agent (optional, nur wenn aktiviert)
     simulation_agent = None

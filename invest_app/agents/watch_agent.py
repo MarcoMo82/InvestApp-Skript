@@ -18,6 +18,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_MAX_ORDERS_PER_SYMBOL = 2  # Fallback wenn Config fehlt
+_PENDING_FILE_TICKET = -1  # Sentinel: Order via pending_order.json geschrieben, kein MT5-Ticket
 
 
 class WatchAgent:
@@ -157,17 +158,21 @@ class WatchAgent:
 
                 if self._check_entry_condition(signal, ohlcv_1m):
                     ticket = self._place_order(signal)
-                    if ticket is not None:
+                    if ticket is not None and ticket != _PENDING_FILE_TICKET:
                         executed.append(signal)
                         check_status = "erfüllt"
                         logger.info(f"Order ausgeführt: {instrument}")
+                    elif ticket == _PENDING_FILE_TICKET:
+                        # Order via pending_order.json gequeued – kein Retry
+                        executed.append(signal)
+                        check_status = "datei"
+                        logger.info(f"[Watch] {instrument} | Order via pending_order.json gequeued")
                     elif self.trade_connector is None:
-                        # Kein MT5-Connector verfügbar → Signal bleibt in Überwachung
-                        # Kein Retry-Zähler: Signal ist gültig, nur Ausführung nicht möglich
+                        # Reconnect fehlgeschlagen → nächster Zyklus versucht erneut
                         check_status = "kein MT5"
                         logger.warning(
                             f"[Watch] {instrument} | Entry-Bedingung erfüllt, "
-                            f"aber kein MT5-Connector → Signal bleibt in Überwachung"
+                            f"aber MT5 nicht erreichbar → Signal bleibt in Überwachung"
                         )
                     else:
                         attempt = signal.get("_retry_count", 0) + 1
@@ -494,6 +499,35 @@ class WatchAgent:
         except Exception as e:
             logger.debug(f"[Watch-Agent] Zone-Update Fehler {symbol}: {e}")
 
+    def _try_reconnect_mt5(self) -> bool:
+        """
+        Versucht MT5Connector neu zu initialisieren (Lazy Reconnect, einmalig pro Aufruf).
+        Bei Erfolg: self.trade_connector wird gesetzt und True zurückgegeben.
+        """
+        try:
+            from data.mt5_connector import MT5_AVAILABLE, MT5Connector
+            if not MT5_AVAILABLE:
+                return False
+            config = self._config
+            if config is None or not getattr(config, "mt5_login", None):
+                return False
+            connector = MT5Connector(
+                login=config.mt5_login,
+                password=config.mt5_password,
+                server=config.mt5_server,
+                path=getattr(config, "mt5_path", ""),
+                config=config,
+            )
+            if connector.connect():
+                self.trade_connector = connector
+                logger.info("[Watch] MT5 Lazy Reconnect erfolgreich – Trade-Connector aktiv.")
+                return True
+            logger.warning("[Watch] MT5 Lazy Reconnect fehlgeschlagen.")
+            return False
+        except Exception as e:
+            logger.warning(f"[Watch] MT5 Lazy Reconnect Fehler: {e}")
+            return False
+
     def _place_order(self, signal: dict) -> Optional[int]:
         """Platziert eine Market-Order über den Connector und speichert in der DB.
 
@@ -559,12 +593,14 @@ class WatchAgent:
             # ── Order senden (nur über MT5Connector) ────────────────────────
             _trade_conn = self.trade_connector
             if _trade_conn is None:
-                logger.error(
-                    f"[Watch] {symbol} | Order-Fehler: MT5Connector nicht initialisiert – prüfe MT5-Verbindung"
-                )
-                if self.order_db is not None:
-                    self.order_db.mark_failed(order_id)
-                return None
+                logger.warning("[Watch] Kein trade_connector – versuche MT5 neu zu verbinden...")
+                if self._try_reconnect_mt5():
+                    _trade_conn = self.trade_connector
+                else:
+                    logger.error(f"[Watch] {symbol} | MT5 nicht erreichbar – Order abgebrochen")
+                    if self.order_db is not None:
+                        self.order_db.mark_failed(order_id)
+                    return None
 
             ticket = _trade_conn.place_market_order(
                 symbol=symbol,
@@ -616,6 +652,27 @@ class WatchAgent:
 
                 return ticket
             else:
+                # Fallback: pending_order.json sofort schreiben wenn MT5Connector (kein Retry)
+                try:
+                    from data.mt5_connector import MT5Connector as _MT5Connector
+                    _is_mt5 = isinstance(_trade_conn, _MT5Connector)
+                except Exception:
+                    _is_mt5 = False
+                if _is_mt5 and hasattr(_trade_conn, "write_order_file"):
+                    signal_dict = {
+                        "symbol": symbol,
+                        "direction": "buy" if direction == "long" else "sell",
+                        "volume": float(lot_size),
+                        "sl": stop_loss,
+                        "tp": take_profit,
+                    }
+                    _trade_conn.write_order_file(signal_dict)
+                    logger.info(
+                        f"[Watch] {symbol} | Fallback: pending_order.json geschrieben – kein Retry"
+                    )
+                    if self.order_db is not None:
+                        self.order_db.mark_failed(order_id)
+                    return _PENDING_FILE_TICKET
                 if self.order_db is not None:
                     self.order_db.mark_failed(order_id)
                 return None

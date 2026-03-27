@@ -392,3 +392,104 @@ class TestCheckAndExecute:
 
         assert len(executed) == 1
         assert agent.pending_count == 1  # signal_b muss erhalten bleiben
+
+
+class TestLazyReconnect:
+    def test_try_reconnect_returns_false_without_config(self):
+        """_try_reconnect_mt5 gibt False zurück wenn kein Config oder mt5_login."""
+        agent = WatchAgent(connector=_make_connector(), trade_connector=None)
+        result = agent._try_reconnect_mt5()
+        assert result is False
+        assert agent.trade_connector is None
+
+    def test_try_reconnect_returns_false_without_mt5_login(self):
+        """_try_reconnect_mt5 gibt False zurück wenn mt5_login nicht gesetzt."""
+        config = MagicMock()
+        config.mt5_login = 0  # falsy
+        agent = WatchAgent(connector=_make_connector(), trade_connector=None, config=config)
+        result = agent._try_reconnect_mt5()
+        assert result is False
+        assert agent.trade_connector is None
+
+    def test_place_order_attempts_reconnect_when_no_trade_connector(self):
+        """_place_order versucht Reconnect wenn trade_connector=None."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+
+        config = MagicMock()
+        config.mt5_login = 0  # Reconnect schlägt fehl (kein Login)
+
+        agent = WatchAgent(connector=connector, trade_connector=None, config=config)
+        signal = {
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_type": "market",
+            "entry_price": 1.1000,
+            "lot_size": 0.01,
+        }
+        agent.add_pending_signal(signal)
+        executed = agent.check_and_execute()
+
+        # Kein Reconnect möglich → Signal bleibt in Überwachung, kein Retry-Zähler
+        assert len(executed) == 0
+        assert agent.pending_count == 1
+        assert signal.get("_retry_count", 0) == 0
+
+    def test_place_order_succeeds_after_lazy_reconnect(self):
+        """_place_order setzt trade_connector nach erfolgreichem Reconnect und führt Order aus."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+
+        new_trade_conn = MagicMock()
+        new_trade_conn.place_market_order = MagicMock(return_value=99999)
+
+        config = MagicMock()
+        config.mt5_login = 12345
+        config.mt5_password = "pw"
+        config.mt5_server = "server"
+        config.mt5_path = ""
+
+        agent = WatchAgent(connector=connector, trade_connector=None, config=config)
+
+        # _try_reconnect_mt5 wird überschrieben um MT5-Import zu umgehen
+        def fake_reconnect():
+            agent.trade_connector = new_trade_conn
+            return True
+
+        agent._try_reconnect_mt5 = fake_reconnect
+
+        signal = {
+            "instrument": "EURUSD",
+            "direction": "long",
+            "entry_type": "market",
+            "entry_price": 1.1000,
+            "lot_size": 0.01,
+        }
+        agent.add_pending_signal(signal)
+        executed = agent.check_and_execute()
+
+        assert len(executed) == 1
+        assert agent.pending_count == 0
+        new_trade_conn.place_market_order.assert_called_once()
+
+
+class TestPendingFileTicket:
+    def test_file_ticket_sentinel_is_handled_as_executed(self):
+        """_PENDING_FILE_TICKET wird in check_and_execute als ausgeführt behandelt (kein Retry)."""
+        from agents.watch_agent import _PENDING_FILE_TICKET
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+
+        agent = WatchAgent(connector=connector, trade_connector=connector)
+
+        # _place_order gibt _PENDING_FILE_TICKET zurück (simuliert file-Fallback)
+        agent._place_order = MagicMock(return_value=_PENDING_FILE_TICKET)
+
+        signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal)
+        executed = agent.check_and_execute()
+
+        # Signal wird aus Pending entfernt, kein Retry
+        assert len(executed) == 1
+        assert agent.pending_count == 0
+        assert signal.get("_retry_count", 0) == 0
