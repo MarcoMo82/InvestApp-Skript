@@ -151,6 +151,14 @@
     "chart_line_width_main": 2,
     "chart_line_width_secondary": 1
   },
+  "economic_calendar": {
+    "economic_calendar_provider": "auto",
+    "economic_calendar_jblanked_api_key": "",
+    "economic_calendar_jblanked_url": "https://www.jblanked.com/news/api/forex-factory/calendar/today/",
+    "economic_calendar_lookback_hours": 12,
+    "economic_calendar_lookahead_hours": 24,
+    "economic_calendar_high_impact_only": true
+  },
   "watch_agent": {
     "watch_agent_zone_update_enabled": true,
     "watch_agent_zone_update_entry_tolerance_pct": 0.5,

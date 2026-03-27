@@ -25,7 +25,9 @@ def _make_ohlcv(n=100):
 
 class TestOrchestratorGates:
     def test_macro_gate_blocks_on_high_event_risk(self):
-        """MacroAgent mit event_risk=high → trading_allowed=False."""
+        """Kalender liefert High-Impact Event → event_risk=high, trading_allowed=False."""
+        from datetime import datetime, timedelta, timezone
+
         mock_client = MagicMock()
         mock_client.analyze.return_value = (
             '{"macro_bias": "neutral", "event_risk": "high",'
@@ -36,12 +38,27 @@ class TestOrchestratorGates:
         mock_fetcher.get_yahoo_news.return_value = []
         mock_fetcher.get_economic_calendar_summary.return_value = "FOMC heute"
 
+        # Kalender-Mock: liefert High-Impact Event in 1h
+        future_time = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        mock_cal_instance = MagicMock()
+        mock_cal_instance.get_events.return_value = [{
+            "time": future_time,
+            "currency": "USD",
+            "name": "FOMC Statement",
+            "impact": "high",
+        }]
+        mock_cal_instance.last_source = "JBlanked"
+
         from agents.macro_agent import MacroAgent
-        agent = MacroAgent(claude_client=mock_client, news_fetcher=mock_fetcher)
-        result = agent.analyze({"symbol": "EURUSD"})
+        with patch("agents.macro_agent.EconomicCalendar", return_value=mock_cal_instance):
+            agent = MacroAgent(claude_client=mock_client, news_fetcher=mock_fetcher)
+            result = agent.analyze({"symbol": "EURUSD"})
 
         assert result["trading_allowed"] is False
         assert result["event_risk"] == "high"
+        assert result["calendar_source"] == "JBlanked"
 
     def test_macro_gate_allows_low_risk(self):
         """MacroAgent mit event_risk=low → trading_allowed=True."""

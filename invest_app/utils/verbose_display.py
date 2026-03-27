@@ -162,6 +162,16 @@ def print_symbol_analysis(
         else:
             lines.append(("macro", f"Macro:      Bias={bias}  Event-Risiko={risk}  {ok} freigegeben{suffix}", approved))
 
+        # Kalender-Quelle anzeigen
+        cal_source = macro.get("calendar_source", "")
+        cal_count = macro.get("calendar_event_count", 0)
+        if cal_source:
+            if cal_source == "UNKNOWN":
+                cal_line = "Kalender:   UNKNOWN (nicht erreichbar)"
+            else:
+                cal_line = f"Kalender:   {cal_source}  ({cal_count} High-Impact Events)"
+            lines.append(("calendar", cal_line, True))
+
     # Trend
     trend = agent_results.get("trend") or {}
     if trend:

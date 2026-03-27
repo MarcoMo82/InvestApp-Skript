@@ -89,6 +89,11 @@ _SECTIONS: dict[str, list[str]] = {
         "chart_color_key_level_resistance", "chart_color_fvg", "chart_color_liquidity",
         "chart_line_width_main", "chart_line_width_secondary",
     ],
+    "economic_calendar": [
+        "economic_calendar_provider", "economic_calendar_jblanked_api_key",
+        "economic_calendar_jblanked_url", "economic_calendar_lookback_hours",
+        "economic_calendar_lookahead_hours", "economic_calendar_high_impact_only",
+    ],
     "watch_agent": [
         "watch_agent_zone_update_enabled", "watch_agent_zone_update_entry_tolerance_pct",
         "watch_agent_zone_update_ob_consumed_threshold", "watch_agent_heartbeat_interval",
@@ -262,6 +267,13 @@ class Config:
         "chart_color_liquidity": 10235616,
         "chart_line_width_main": 2,
         "chart_line_width_secondary": 1,
+        # economic_calendar
+        "economic_calendar_provider": "auto",
+        "economic_calendar_jblanked_api_key": "",
+        "economic_calendar_jblanked_url": "https://www.jblanked.com/news/api/forex-factory/calendar/today/",
+        "economic_calendar_lookback_hours": 12,
+        "economic_calendar_lookahead_hours": 24,
+        "economic_calendar_high_impact_only": True,
         # watch_agent
         "watch_agent_zone_update_enabled": True,
         "watch_agent_zone_update_entry_tolerance_pct": 0.5,

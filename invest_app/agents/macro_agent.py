@@ -7,15 +7,24 @@ Enthält check_news_block() (P1.4) und get_risk_sentiment() (P2.3).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agents.base_agent import BaseAgent
 from utils.claude_client import ClaudeClient
 from data.news_fetcher import NewsFetcher
+from data.economic_calendar import EconomicCalendar
 
 # Safe-Haven Symbole: werden bei Risk-Off bevorzugt
 SAFE_HAVEN_SYMBOLS: list[str] = ["USDJPY", "USDCHF", "XAUUSD", "CHFJPY"]
+
+
+def _parse_event_time(time_str: str) -> datetime:
+    """Parst einen ISO-Zeit-String (mit oder ohne Z) in ein timezone-aware datetime."""
+    try:
+        return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _extract_currencies(symbol: str) -> list[str]:
@@ -79,11 +88,36 @@ class MacroAgent(BaseAgent):
             symbol (str): Trading-Symbol
 
         Output:
-            macro_bias, event_risk, trading_allowed, key_themes, reasoning
+            macro_bias, event_risk, trading_allowed, key_themes, reasoning,
+            calendar_source, calendar_event_count
         """
         symbol = self._require_field(data, "symbol")
+        currencies = _extract_currencies(symbol)
 
-        # News holen (Yahoo Finance + MT5 falls verfügbar)
+        # ── Wirtschaftskalender: event_risk bestimmen ─────────────────────
+        calendar_source = "UNKNOWN"
+        calendar_event_count = 0
+        calendar_event_risk: str | None = None  # None = Kalender nicht verfügbar
+
+        try:
+            from config import config as _cfg
+            cal = EconomicCalendar(_cfg)
+            cal_events = cal.get_events(currencies) if currencies else []
+            calendar_source = cal.last_source
+            calendar_event_count = len(cal_events)
+
+            # Nur zukünftige Events zählen für event_risk
+            now = datetime.now(timezone.utc)
+            upcoming = [
+                e for e in cal_events
+                if _parse_event_time(e.get("time", "")) > now
+            ]
+            calendar_event_risk = "high" if upcoming else "low"
+        except Exception as e:
+            self.logger.warning(f"[MacroAgent] Kalender-Abruf fehlgeschlagen: {e}")
+            calendar_source = "UNKNOWN"
+
+        # ── News holen (Yahoo Finance + MT5 falls verfügbar) ─────────────
         news_items = self.news_fetcher.get_yahoo_news(symbol)
         market_news = self.news_fetcher.get_finanznachrichten()
         mt5_news = (
@@ -95,24 +129,32 @@ class MacroAgent(BaseAgent):
         all_news = (news_items + market_news + mt5_news)[:10]
 
         if not all_news:
-            return self._default_result(symbol, "Keine News verfügbar.")
+            result = self._default_result(symbol, "Keine News verfügbar.")
+        else:
+            # News-Text für Prompt aufbereiten
+            news_text = "\n".join(
+                f"- [{n.get('publisher', 'unbekannt')}] {n['title']}" for n in all_news
+            )
+            prompt = USER_PROMPT_TEMPLATE.format(symbol=symbol, news_text=news_text)
 
-        # News-Text für Prompt aufbereiten
-        news_text = "\n".join(
-            f"- [{n.get('publisher', 'unbekannt')}] {n['title']}" for n in all_news
-        )
+            try:
+                response = self.claude.analyze(prompt, system_prompt=SYSTEM_PROMPT)
+                result = self._parse_response(response)
+            except Exception as e:
+                self.logger.error(f"Claude-Aufruf fehlgeschlagen: {e}")
+                result = self._default_result(symbol, str(e))
 
-        prompt = USER_PROMPT_TEMPLATE.format(symbol=symbol, news_text=news_text)
+            result["symbol"] = symbol
+            result["news_count"] = len(all_news)
 
-        try:
-            response = self.claude.analyze(prompt, system_prompt=SYSTEM_PROMPT)
-            result = self._parse_response(response)
-        except Exception as e:
-            self.logger.error(f"Claude-Aufruf fehlgeschlagen: {e}")
-            return self._default_result(symbol, str(e))
+        # ── Kalender überschreibt event_risk (falls verfügbar) ────────────
+        if calendar_event_risk is not None:
+            result["event_risk"] = calendar_event_risk
+            if calendar_event_risk == "high":
+                result["trading_allowed"] = False
 
-        result["symbol"] = symbol
-        result["news_count"] = len(all_news)
+        result["calendar_source"] = calendar_source
+        result["calendar_event_count"] = calendar_event_count
         return result
 
     def _parse_response(self, response: str) -> dict:
@@ -165,33 +207,35 @@ class MacroAgent(BaseAgent):
             (True,  "News-Block: <Titel> (<Währung>) in <N> Min")  → blockiert
             (False, "")                                             → frei
         """
-        from data.economic_calendar import get_upcoming_high_impact_events
-
         currencies = _extract_currencies(symbol)
         if not currencies:
             return False, ""
 
         try:
-            events = get_upcoming_high_impact_events(minutes_before, minutes_after)
+            from config import config as _cfg
+            cal = EconomicCalendar(_cfg)
+            all_events = cal.get_events(currencies)
         except Exception as e:
             self.logger.error(f"[MacroAgent] check_news_block Fehler: {e}")
             return False, ""
 
         now = datetime.now(timezone.utc)
-        for event in events:
-            if event["currency"] in currencies:
-                delta_sec = (event["time"] - now).total_seconds()
-                delta_min = int(delta_sec / 60)
+        window_start = now - timedelta(minutes=minutes_after)
+        window_end = now + timedelta(minutes=minutes_before)
+
+        for event in all_events:
+            if event.get("currency") not in currencies:
+                continue
+            event_time = _parse_event_time(event.get("time", ""))
+            if event_time == datetime.min.replace(tzinfo=timezone.utc):
+                continue
+            if window_start <= event_time <= window_end:
+                delta_min = int((event_time - now).total_seconds() / 60)
+                name = event.get("name", "Unbekanntes Event")
                 if delta_min >= 0:
-                    reason = (
-                        f"News-Block: {event['title']} "
-                        f"({event['currency']}) in {delta_min} Min"
-                    )
+                    reason = f"News-Block: {name} ({event['currency']}) in {delta_min} Min"
                 else:
-                    reason = (
-                        f"News-Block: {event['title']} "
-                        f"({event['currency']}) vor {abs(delta_min)} Min"
-                    )
+                    reason = f"News-Block: {name} ({event['currency']}) vor {abs(delta_min)} Min"
                 return True, reason
 
         return False, ""

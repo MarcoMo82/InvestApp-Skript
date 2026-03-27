@@ -9,4 +9,5 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 SQLAlchemy>=2.0.0
 pydantic>=2.0.0
+investpy>=1.0.8
 pytest>=7.4.0
