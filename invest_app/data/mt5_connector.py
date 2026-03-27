@@ -266,12 +266,12 @@ class MT5Connector:
         common_path = self._get_common_files_path()
         order_file = getattr(self.config, "mt5_order_file", "pending_order.json") if self.config else "pending_order.json"
         path = common_path / order_file
-        logger.info(f"[mt5_connector] Schreibe {order_file} nach: {common_path}")
         logger.warning(
             "[mt5_connector] HINWEIS: Stelle sicher dass InvestApp_Zones EA auf einem Chart läuft!"
         )
         with open(path, "w") as f:
             json.dump(order, f, indent=2)
+        logger.info(f"[MT5] pending_order.json geschrieben nach: {path}")
         logger.info(
             f"[Order] Datei geschrieben: {signal.get('symbol')} {signal.get('direction')} "
             f"@ SL={signal.get('sl')}"
@@ -769,7 +769,11 @@ class MT5Connector:
         # Fallback: Output-Verzeichnis des Projekts
         output = Path(getattr(cfg, "output_dir", "Output")) if cfg else Path("Output")
         output.mkdir(exist_ok=True)
-        logger.info(f"[MT5] Common Files Pfad: Output-Verzeichnis {output}")
+        logger.warning(
+            f"[MT5] Common Files Pfad nicht gefunden – Fallback auf Output-Verzeichnis: {output}. "
+            "Bitte 'mt5_common_files_path' in config.json setzen, z.B.: "
+            "C:/Users/[Username]/AppData/Roaming/MetaQuotes/Terminal/Common/Files"
+        )
         return output
 
     def diagnose(self) -> dict:

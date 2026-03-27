@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-03-27T12:03:55.451350+00:00",
+  "symbols": {
+    "EURUSD": {
+      "entry_zone": {
+        "price": 1.085,
+        "direction": "long",
+        "type": "pullback",
+        "active": false
+      },
+      "order_blocks": [],
+      "last_watch_update": "2026-03-27T12:03:55.451025+00:00"
+    }
+  }
+}

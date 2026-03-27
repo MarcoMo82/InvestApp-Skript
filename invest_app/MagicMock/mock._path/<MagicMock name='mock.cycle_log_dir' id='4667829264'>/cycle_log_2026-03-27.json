@@ -1,0 +1,15 @@
+{
+  "date": "2026-03-27",
+  "cycles": [
+    {
+      "cycle_nr": 1,
+      "timestamp": "2026-03-27T12:03:53Z",
+      "symbols_analyzed": [
+        "EURUSD"
+      ],
+      "results": []
+    }
+  ],
+  "orders": [],
+  "trade_results": []
+}
