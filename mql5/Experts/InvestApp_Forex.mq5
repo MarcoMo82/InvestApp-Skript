@@ -32,7 +32,8 @@ string SYMBOLS[] = {
    "EURJPY", "GBPJPY"
 };
 int       SYMBOL_COUNT = 10;
-datetime  g_lastAnalysisTime = 0;
+datetime  g_lastAnalysisTime   = 0;
+datetime  g_lastMarketDataWrite = 0;
 AppConfig g_config;
 
 //+------------------------------------------------------------------+
@@ -79,6 +80,13 @@ void OnTimer()
       AnalyzeSymbol(symbol);
    }
 
+   // market_data.json alle 15 Minuten für Python Level Agent schreiben
+   if((int)(TimeCurrent() - g_lastMarketDataWrite) >= 900)
+   {
+      WriteMarketData(SYMBOLS, SYMBOL_COUNT);
+      g_lastMarketDataWrite = TimeCurrent();
+   }
+
    // Trade-Begleitung für offene Positionen
    // TODO: TradeManagement.ManageTrades()
 
@@ -92,14 +100,15 @@ void OnTimer()
 void AnalyzeSymbol(string symbol)
 {
    // [1] Makro-Filter
-   // TODO: if(!MacroFilter.IsAllowed(symbol)) return;
+   MacroResult macro = CheckMacro(symbol, g_config);
+   if(!macro.isAllowed)
+   {
+      LOG_D("InvestApp_Forex", symbol, "MacroFilter: " + macro.reject_reason);
+      return;
+   }
 
    // [2] Trend-Analyse
    TrendResult trend = AnalyzeTrend(symbol, g_config);
-   // Richtung kommt vom EntrySignal – hier noch kein Filter; nur loggen
-   if(!IsTrendAligned(trend, /* signal_direction */ 0))
-      LOG_D("InvestApp_Forex", symbol, "Trend nicht ausgerichtet: " + trend.summary);
-
    if(trend.direction == TREND_NEUTRAL)
    {
       LOG_D("InvestApp_Forex", symbol, "Kein klarer Trend: " + trend.summary);
@@ -120,24 +129,38 @@ void AnalyzeSymbol(string symbol)
    }
 
    // [4] Level-Erkennung (aus zones.json)
-   // TODO: LevelData levels = LevelDetection.GetZones(symbol);
+   SymbolZones zones;
+   LoadZones(symbol, zones);
 
-   // [5] Entry-Signal (trend als Parameter weitergeben sobald EntrySignal implementiert)
-   // TODO: SignalResult signal = EntrySignal.GetSignal(symbol, trend, levels);
-   // TODO: if(signal.type == SIGNAL_NONE) return;
+   // [5] Entry-Signal
+   SignalResult signal = GetSignal(symbol, trend, zones, g_config);
+   if(signal.signal == SIGNAL_NONE)
+   {
+      LOG_D("InvestApp_Forex", symbol, "Kein Signal: " + signal.summary);
+      return;
+   }
 
-   // [6] Validierung (direction kommt vom EntrySignal)
-   // ValidationResult val = ValidateTrade(symbol, signal.direction, g_config);
-   // if(!val.isValid) { LOG_W("InvestApp_Forex", symbol, "Validierung: " + val.reject_reason); return; }
+   // [6] Validierung
+   ValidationResult val = ValidateTrade(symbol, (int)signal.signal, g_config);
+   if(!val.isValid)
+   {
+      LOG_W("InvestApp_Forex", symbol, "Validierung: " + val.reject_reason);
+      return;
+   }
 
    // [7] Risiko berechnen
-   // TODO: RiskResult risk = RiskManager.Calculate(symbol, signal);
-   // TODO: if(!risk.isValid) return;
+   RiskResult risk = CalculateRisk(symbol, (int)signal.signal, signal.entry_price, g_config);
+   if(!risk.isValid)
+   {
+      LOG_W("InvestApp_Forex", symbol, "Risiko: " + risk.reject_reason);
+      return;
+   }
+
+   LOG_I("InvestApp_Forex", symbol,
+         "Signal bereit | " + signal.summary + " | Lots=" + DoubleToString(risk.lots, 2));
 
    // [8] Order platzieren
-   // TODO: if(EnableTrading) OrderSend(...);
-
-   Print("[InvestApp_Forex] ", symbol, " – Analyse abgeschlossen");
+   // TODO Phase 3: OrderSend()
 }
 
 //+------------------------------------------------------------------+
