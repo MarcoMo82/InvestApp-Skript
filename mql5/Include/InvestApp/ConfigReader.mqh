@@ -166,7 +166,10 @@ string _JsonGetRawValue(string json, string key)
       }
    }
 
-   return StringTrimLeft(StringTrimRight(StringSubstr(json, val_start, val_end - val_start)));
+   string raw = StringSubstr(json, val_start, val_end - val_start);
+   StringTrimLeft(raw);
+   StringTrimRight(raw);
+   return raw;
 }
 
 double _JsonGetDouble(string json, string key, double default_val)
