@@ -449,7 +449,7 @@ class Orchestrator:
                 name="Watch-Agent",
                 replace_existing=True,
             )
-            logger.info("Watch-Agent gestartet (1-Minuten-Intervall).")
+            logger.info(f"Watch-Agent gestartet ({getattr(self.config, 'watch_interval_seconds', 15)}s-Intervall).")
         if self.scanner_agent is not None:
             scanner_interval = getattr(self.config, "scanner_interval_minutes", 60)
             self._scheduler.add_job(

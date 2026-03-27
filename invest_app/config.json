@@ -32,7 +32,7 @@
     "scanner_min_score": 10,
     "scanner_top_n": 5,
     "scanner_respect_category_limits": true,
-    "scanner_interval_minutes": 60,
+    "scanner_interval_minutes": 5,
     "scanner_categories": [
       "forex",
       "indices",
@@ -95,7 +95,7 @@
   },
   "pipeline": {
     "cycle_interval_minutes": 5,
-    "watch_interval_seconds": 60,
+    "watch_interval_seconds": 15,
     "news_cache_ttl": 3600,
     "confidence_threshold": 80,
     "news_yahoo_enabled": false,
