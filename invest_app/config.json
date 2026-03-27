@@ -47,6 +47,12 @@
     },
     "symbol_provider_max_file_age_minutes": 5
   },
+  "ea_symbols": {
+    "_comment": "Optionale Symbol-Override-Listen für MQL5 EAs. Leer = automatisch aus Market Watch laden.",
+    "forex": [],
+    "indexes": [],
+    "nasdaq": []
+  },
   "risk": {
     "risk_per_trade": 0.01,
     "risk_per_trade_pct": 1.0,

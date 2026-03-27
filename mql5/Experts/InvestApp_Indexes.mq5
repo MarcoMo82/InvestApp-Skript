@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //|  InvestApp_Indexes.mq5                                            |
 //|  Expert Advisor – Indexes-Bereich                                 |
-//|  Symbols: DE40, US500, US30, UK100, JP225                        |
+//|  Symbols: dynamisch aus Market Watch (SYMBOL_CALC_MODE_CFDINDEX) |
+//|           Override via config.json → ea_symbols.indexes          |
 //|  Architektur: OnTimer(1s) + 30s Analyse-Throttling               |
 //+------------------------------------------------------------------+
 #property copyright "InvestApp"
@@ -21,6 +22,7 @@
 #include <InvestApp/RiskManager.mqh>
 #include <InvestApp/TradeManagement.mqh>
 #include <InvestApp/OrderExecution.mqh>
+#include <InvestApp/SymbolManager.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -28,8 +30,8 @@ input string ConfigPath = "";                  // Pfad zu config.json (leer = Co
 input bool   EnableTrading = true;             // Trading aktiv
 
 //--- Globale Variablen
-string    SYMBOLS[] = {"DE40", "US500", "US30", "UK100", "JP225"};
-int       SYMBOL_COUNT = 5;
+string    SYMBOLS[];
+int       SYMBOL_COUNT = 0;
 datetime  g_lastAnalysisTime   = 0;
 datetime  g_lastMarketDataWrite = 0;
 AppConfig g_config;
@@ -57,14 +59,24 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   Print("[InvestApp_Indexes] EA gestartet | Symbole: ", SYMBOL_COUNT,
-         " | Intervall: ", AnalysisIntervalSeconds, "s");
+   Print("[InvestApp_Indexes] EA gestartet | Intervall: ", AnalysisIntervalSeconds, "s");
 
    if(!LoadConfig(g_config, ConfigPath))
       Print("[InvestApp_Indexes] WARNUNG: Config konnte nicht geladen werden, nutze Standardwerte");
    else
       Print("[InvestApp_Indexes] Config geladen | Version: ", g_config.version,
             " | Stand: ", g_config.last_updated);
+
+   // Symbole dynamisch laden (Market Watch oder config.json Override)
+   SYMBOL_COUNT = LoadEASymbols(SYMBOLS, "indexes", ConfigPath);
+   if(SYMBOL_COUNT == 0)
+   {
+      Print("[InvestApp_Indexes] FEHLER: Keine Index-Symbole gefunden – Market Watch und config.json prüfen");
+      return INIT_FAILED;
+   }
+   LOG_I(EA_NAME, "", "Symbole geladen: " + IntegerToString(SYMBOL_COUNT) + " Symbole aus Market Watch");
+   for(int i = 0; i < SYMBOL_COUNT; i++)
+      LOG_D(EA_NAME, SYMBOLS[i], "Symbol aktiv");
 
    // Startup: Bestehende offene Positionen in State Machine laden
    for(int i = 0; i < PositionsTotal(); i++)

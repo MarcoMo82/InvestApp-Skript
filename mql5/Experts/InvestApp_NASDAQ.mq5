@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //|  InvestApp_NASDAQ.mq5                                             |
 //|  Expert Advisor – NASDAQ-Bereich                                  |
-//|  Symbols: USTEC (NQ100), AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA|
+//|  Symbols: dynamisch aus Market Watch (Aktien CFD + NASDAQ-Index) |
+//|           Override via config.json → ea_symbols.nasdaq           |
 //|  Architektur: OnTimer(1s) + 30s Analyse-Throttling               |
 //+------------------------------------------------------------------+
 #property copyright "InvestApp"
@@ -21,6 +22,7 @@
 #include <InvestApp/RiskManager.mqh>
 #include <InvestApp/TradeManagement.mqh>
 #include <InvestApp/OrderExecution.mqh>
+#include <InvestApp/SymbolManager.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -28,8 +30,8 @@ input string ConfigPath = "";                  // Pfad zu config.json (leer = Co
 input bool   EnableTrading = true;             // Trading aktiv
 
 //--- Globale Variablen
-string    SYMBOLS[] = {"USTEC", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"};
-int       SYMBOL_COUNT = 8;
+string    SYMBOLS[];
+int       SYMBOL_COUNT = 0;
 datetime  g_lastAnalysisTime   = 0;
 datetime  g_lastMarketDataWrite = 0;
 AppConfig g_config;
@@ -57,14 +59,24 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   Print("[InvestApp_NASDAQ] EA gestartet | Symbole: ", SYMBOL_COUNT,
-         " | Intervall: ", AnalysisIntervalSeconds, "s");
+   Print("[InvestApp_NASDAQ] EA gestartet | Intervall: ", AnalysisIntervalSeconds, "s");
 
    if(!LoadConfig(g_config, ConfigPath))
       Print("[InvestApp_NASDAQ] WARNUNG: Config konnte nicht geladen werden, nutze Standardwerte");
    else
       Print("[InvestApp_NASDAQ] Config geladen | Version: ", g_config.version,
             " | Stand: ", g_config.last_updated);
+
+   // Symbole dynamisch laden (Market Watch oder config.json Override)
+   SYMBOL_COUNT = LoadEASymbols(SYMBOLS, "nasdaq", ConfigPath);
+   if(SYMBOL_COUNT == 0)
+   {
+      Print("[InvestApp_NASDAQ] FEHLER: Keine NASDAQ-Symbole gefunden – Market Watch und config.json prüfen");
+      return INIT_FAILED;
+   }
+   LOG_I(EA_NAME, "", "Symbole geladen: " + IntegerToString(SYMBOL_COUNT) + " Symbole aus Market Watch");
+   for(int i = 0; i < SYMBOL_COUNT; i++)
+      LOG_D(EA_NAME, SYMBOLS[i], "Symbol aktiv");
 
    // Startup: Bestehende offene Positionen in State Machine laden
    for(int i = 0; i < PositionsTotal(); i++)
