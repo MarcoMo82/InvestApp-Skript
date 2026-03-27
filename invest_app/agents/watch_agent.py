@@ -161,6 +161,14 @@ class WatchAgent:
                         executed.append(signal)
                         check_status = "erfüllt"
                         logger.info(f"Order ausgeführt: {instrument}")
+                    elif self.trade_connector is None:
+                        # Kein MT5-Connector verfügbar → Signal bleibt in Überwachung
+                        # Kein Retry-Zähler: Signal ist gültig, nur Ausführung nicht möglich
+                        check_status = "kein MT5"
+                        logger.warning(
+                            f"[Watch] {instrument} | Entry-Bedingung erfüllt, "
+                            f"aber kein MT5-Connector → Signal bleibt in Überwachung"
+                        )
                     else:
                         attempt = signal.get("_retry_count", 0) + 1
                         signal["_retry_count"] = attempt

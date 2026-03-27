@@ -326,7 +326,7 @@ class TestCheckAndExecute:
         assert signal.get("_retry_count") == 3
 
     def test_place_order_blocked_when_no_trade_connector(self):
-        """Kein trade_connector → Order-Fehler wird geloggt, Signal bleibt pending (Retry 1)."""
+        """Kein trade_connector → Signal bleibt dauerhaft in Überwachung, kein Retry-Zähler."""
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         # trade_connector=None simuliert: MT5 nicht verfügbar (yfinance-Fallback)
@@ -338,7 +338,22 @@ class TestCheckAndExecute:
 
         assert len(executed) == 0
         assert agent.pending_count == 1
-        assert signal.get("_retry_count") == 1
+        # Kein Retry-Zähler wenn kein Connector – Signal bleibt dauerhaft überwacht
+        assert signal.get("_retry_count", 0) == 0
+
+    def test_signal_stays_pending_indefinitely_without_trade_connector(self):
+        """Kein trade_connector → Signal wird auch nach 3+ Zyklen NICHT verworfen."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+        agent = WatchAgent(connector=connector, trade_connector=None)
+        signal = {"instrument": "EURCHF", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal)
+
+        for _ in range(5):
+            agent.check_and_execute()
+
+        assert agent.pending_count == 1
+        assert signal.get("_retry_count", 0) == 0
 
     def test_signal_id_assigned_on_add(self):
         """add_pending_signal weist eindeutige _signal_id zu."""
