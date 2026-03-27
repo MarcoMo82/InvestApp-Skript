@@ -56,8 +56,8 @@ string RetcodeToString(uint retcode)
       case TRADE_RETCODE_LIMIT_VOLUME:    return "LIMIT_VOLUME – Volumen-Limit erreicht";
       case TRADE_RETCODE_INVALID_ORDER:   return "INVALID_ORDER – ungültige Order";
       case TRADE_RETCODE_POSITION_CLOSED: return "POSITION_CLOSED – Position bereits geschlossen";
-      case 10006:                         return "REQUOTE – Requote";
-      case 10015:                         return "REJECT – abgelehnt";
+      case TRADE_RETCODE_REQUOTE:         return "REQUOTE – Requote";
+      case TRADE_RETCODE_REJECT:          return "REJECT – abgelehnt";
       default:
          return "UNBEKANNT (" + string(retcode) + ")";
    }
