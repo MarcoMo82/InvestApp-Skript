@@ -9,6 +9,8 @@
 #property version   "0.1"
 #property strict
 
+#define EA_NAME "Forex"
+
 #include <InvestApp/Logger.mqh>
 #include <InvestApp/ConfigReader.mqh>
 #include <InvestApp/MacroFilter.mqh>
@@ -19,6 +21,7 @@
 #include <InvestApp/TradeValidator.mqh>
 #include <InvestApp/RiskManager.mqh>
 #include <InvestApp/TradeManagement.mqh>
+#include <InvestApp/OrderExecution.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -99,6 +102,20 @@ void OnTimer()
       ManageRollover(SYMBOLS, SYMBOL_COUNT, g_config);
       s_lastRolloverCheck = TimeCurrent();
    }
+
+   // ea_status.json alle 60s schreiben
+   static datetime s_lastStatus = 0;
+   if((int)(TimeCurrent() - s_lastStatus) >= 60)
+   {
+      string status = "{\"ea\": \"" + EA_NAME + "\", \"last_heartbeat\": \"" +
+                      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) +
+                      "\", \"open_positions\": " + string(PositionsTotal()) +
+                      ", \"account_equity\": " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) +
+                      ", \"enabled\": " + string(EnableTrading) + "}";
+      int f = FileOpen("ea_status_" + EA_NAME + ".json", FILE_WRITE|FILE_COMMON|FILE_TXT|FILE_ANSI);
+      if(f != INVALID_HANDLE) { FileWriteString(f, status); FileClose(f); }
+      s_lastStatus = TimeCurrent();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -168,7 +185,38 @@ void AnalyzeSymbol(string symbol)
          "Signal bereit | " + signal.summary + " | Lots=" + DoubleToString(risk.lots, 2));
 
    // [8] Order platzieren
-   // TODO Phase 3: OrderSend()
+   if(EnableTrading)
+   {
+      // Config alle 15 Min neu laden falls veraltet
+      if(IsConfigStale())
+      {
+         LoadConfig(g_config);
+         LOG_I("EA", symbol, "Config neu geladen");
+      }
+
+      OrderResult order = PlaceMarketOrder(
+         symbol,
+         (int)signal.signal,
+         risk.lots,
+         risk.sl_price,
+         risk.tp_price,
+         g_config,
+         risk.atr_value
+      );
+
+      if(order.success)
+      {
+         RegisterPosition(order.ticket, order.filled_price, risk.atr_value);
+         LOG_I("EA", symbol, "✓ Order erfolgreich | Ticket=" + string(order.ticket));
+      }
+   }
+   else
+   {
+      LOG_I("EA", symbol, "SIMULATION | Signal wäre: " + signal.summary +
+            " | Lots=" + DoubleToString(risk.lots, 2) +
+            " | SL=" + DoubleToString(risk.sl_price, 5) +
+            " | ATR=" + DoubleToString(risk.atr_value, 5));
+   }
 }
 
 //+------------------------------------------------------------------+

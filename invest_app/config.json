@@ -249,5 +249,11 @@
     "activate_minutes_before_rollover": 60,
     "range_candles_lookback": 12,
     "range_buffer_pips": 2
+  },
+  "execution": {
+    "magic_number": 20260101,
+    "slippage_points": 10,
+    "order_comment": "InvestApp_v1",
+    "filling_mode": "IOC"
   }
 }
