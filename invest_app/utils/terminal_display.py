@@ -214,7 +214,7 @@ def print_signal_table(
     print(_THIN)
 
     if not signals:
-        print(f"{_IND}Keine Signale in diesem Zyklus")
+        print(f"{_IND}Keine Forecast-Zonen oder Signale in diesem Zyklus")
         print(_SEP)
         return
 
