@@ -130,6 +130,7 @@ class WatchAgent:
         """
         executed: list[dict] = []
         discarded: list[dict] = []
+        watch_statuses: list[dict] = []
 
         with self._lock:
             signals = list(self._pending_signals)
@@ -139,12 +140,24 @@ class WatchAgent:
             try:
                 ohlcv_1m = self.connector.get_ohlcv(instrument, "1m", 30)
                 if ohlcv_1m is None or ohlcv_1m.empty:
+                    logger.warning(f"[Watch] {instrument} | Keine 1m-Kursdaten → Signal bleibt ausstehend")
+                    watch_statuses.append({
+                        "instrument": instrument,
+                        "entry_type": signal.get("entry_type", "market"),
+                        "current_price": 0.0,
+                        "entry_price": float(signal.get("entry_price") or 0.0),
+                        "check_status": "warte",
+                        "block_reason": "keine Kursdaten",
+                    })
                     continue  # bleibt in _pending_signals
+
+                current_price = float(ohlcv_1m["close"].iloc[-1])
 
                 if self._check_entry_condition(signal, ohlcv_1m):
                     ticket = self._place_order(signal)
                     if ticket is not None:
                         executed.append(signal)
+                        check_status = "erfüllt"
                         logger.info(f"Order ausgeführt: {instrument}")
                     else:
                         attempt = signal.get("_retry_count", 0) + 1
@@ -153,11 +166,31 @@ class WatchAgent:
                         if attempt >= 3:
                             logger.error(f"Order nach 3 Versuchen verworfen: {instrument}")
                             discarded.append(signal)
+                        check_status = "blockiert"
                         # else: bleibt in _pending_signals für nächsten Versuch
-                # else: Bedingung nicht erfüllt → bleibt in _pending_signals
+                else:
+                    check_status = "warte"
+                    # Bedingung nicht erfüllt → bleibt in _pending_signals
+
+                watch_statuses.append({
+                    "instrument": instrument,
+                    "entry_type": signal.get("entry_type", "market"),
+                    "current_price": current_price,
+                    "entry_price": float(signal.get("entry_price") or 0.0),
+                    "check_status": check_status,
+                })
+
             except Exception as e:
                 logger.error(f"Fehler bei Signal-Prüfung {instrument}: {e}")
                 # bleibt in _pending_signals
+
+        # Verbose: Watch-Check-Status pro Signal im Terminal anzeigen
+        if watch_statuses:
+            try:
+                from utils.verbose_display import print_watch_entry_check
+                print_watch_entry_check(watch_statuses, self._config)
+            except Exception:
+                pass
 
         with self._lock:
             # Nur ausgeführte und endgültig verworfene Signale entfernen.
@@ -286,33 +319,81 @@ class WatchAgent:
         current_price = float(ohlcv_1m["close"].iloc[-1])
         entry_price = signal.get("entry_price")
         direction = signal.get("direction")
+        instrument = signal.get("instrument", "UNKNOWN")
 
         # EMA21 auf 1m-Chart
         ema21 = float(ohlcv_1m["close"].ewm(span=21).mean().iloc[-1])
 
         if entry_type == "pullback":
             # Warte bis Preis EMA21 berührt (± 0.05%)
-            return abs(current_price - ema21) / ema21 < 0.0005
+            distance_pct = abs(current_price - ema21) / ema21
+            max_pct = 0.0005
+            result = distance_pct < max_pct
+            status = "✓ ERFÜLLT" if result else "✗ NICHT ERFÜLLT (zu weit von EMA)"
+            logger.info(
+                f"[Watch] {instrument} | Entry-Check: pullback | "
+                f"Aktuell={current_price:.5f} | EMA21={ema21:.5f} | "
+                f"Abstand={distance_pct * 100:.3f}% | Max={max_pct * 100:.2f}% → {status}"
+            )
+            return result
 
         elif entry_type == "breakout":
             # Warte auf Retest: Preis zurück zum Ausbruchslevel (entry_price ± 0.1%)
             if entry_price is None or entry_price == 0:
+                logger.info(
+                    f"[Watch] {instrument} | Entry-Check: breakout | "
+                    f"Kein entry_price angegeben → ✗ NICHT ERFÜLLT"
+                )
                 return False
-            return abs(current_price - entry_price) / entry_price < 0.001
+            distance_pct = abs(current_price - entry_price) / entry_price
+            max_pct = 0.001
+            result = distance_pct < max_pct
+            status = "✓ ERFÜLLT" if result else "✗ NICHT ERFÜLLT (zu weit vom Ausbruchslevel)"
+            logger.info(
+                f"[Watch] {instrument} | Entry-Check: breakout | "
+                f"Aktuell={current_price:.5f} | Entry={entry_price:.5f} | "
+                f"Abstand={distance_pct * 100:.3f}% | Max={max_pct * 100:.2f}% → {status}"
+            )
+            return result
 
         elif entry_type == "rejection":
             # Bestätigende Folgekerze: letzte Kerze muss in Signalrichtung schließen
             last_candle = ohlcv_1m.iloc[-1]
+            candle_open = float(last_candle["open"])
+            candle_close = float(last_candle["close"])
             if direction == "long":
-                return float(last_candle["close"]) > float(last_candle["open"])  # Bullische Kerze
+                result = candle_close > candle_open
+                candle_dir = "bullisch" if candle_close > candle_open else "bearisch"
+                status = "✓ ERFÜLLT" if result else "✗ NICHT ERFÜLLT (bearische Kerze, benötige bullische)"
             else:
-                return float(last_candle["close"]) < float(last_candle["open"])  # Bearische Kerze
+                result = candle_close < candle_open
+                candle_dir = "bearisch" if candle_close < candle_open else "bullisch"
+                status = "✓ ERFÜLLT" if result else "✗ NICHT ERFÜLLT (bullische Kerze, benötige bearische)"
+            logger.info(
+                f"[Watch] {instrument} | Entry-Check: rejection | "
+                f"Richtung={direction} | Kerze={candle_dir} "
+                f"(O={candle_open:.5f} C={candle_close:.5f}) → {status}"
+            )
+            return result
 
         else:  # "market" oder unbekannt
             # Sofort ausführen wenn Preis maximal 0.15% vom Entry entfernt
             if entry_price is None or entry_price == 0:
-                return True  # Market-Order ohne Preisangabe: sofort ausführen
-            return abs(current_price - entry_price) / entry_price < 0.0015
+                logger.info(
+                    f"[Watch] {instrument} | Entry-Check: market | "
+                    f"Kein entry_price → sofortige Ausführung → ✓ ERFÜLLT"
+                )
+                return True
+            distance_pct = abs(current_price - entry_price) / entry_price
+            max_pct = 0.0015
+            result = distance_pct < max_pct
+            status = "✓ ERFÜLLT" if result else "✗ NICHT ERFÜLLT (Preis zu weit vom Entry)"
+            logger.info(
+                f"[Watch] {instrument} | Entry-Check: market | "
+                f"Aktuell={current_price:.5f} | Entry={entry_price:.5f} | "
+                f"Abstand={distance_pct * 100:.3f}% | Max={max_pct * 100:.2f}% → {status}"
+            )
+            return result
 
     def _update_zones_for_symbol(self, symbol: str) -> None:
         """
@@ -431,8 +512,8 @@ class WatchAgent:
                 count = self.order_db.get_order_count(symbol)
                 if count >= max_orders:
                     logger.warning(
-                        f"[Watch-Agent] ❌ {symbol}: Max. {max_orders} Orders erreicht "
-                        f"({count} aktiv) – Signal verworfen"
+                        f"[Watch] {symbol} | Order-Guard: max_orders={max_orders}, aktuell={count} "
+                        f"→ ✗ BLOCKIERT (Max-Orders erreicht)"
                     )
                     return None
 
@@ -440,12 +521,13 @@ class WatchAgent:
                     max_conf = self.order_db.get_max_confidence(symbol)
                     if confidence <= max_conf:
                         logger.warning(
-                            f"[Watch-Agent] ❌ {symbol}: Confidence {confidence:.0f}% ≤ "
-                            f"bestehende {max_conf:.0f}% – 2. Order abgelehnt"
+                            f"[Watch] {symbol} | Order-Guard: confidence={confidence:.0f}% ≤ "
+                            f"bestehend={max_conf:.0f}% → ✗ BLOCKIERT (niedrigere Confidence)"
                         )
                         return None
                     logger.info(
-                        f"[Watch-Agent] 2. Order {symbol}: Confidence {confidence:.0f}% > {max_conf:.0f}% ✓"
+                        f"[Watch] {symbol} | Order-Guard: confidence={confidence:.0f}% > "
+                        f"bestehend={max_conf:.0f}% → ✓ 2. Order erlaubt"
                     )
 
             # ── Order-ID in DB anlegen (status=pending) ─────────────────────
@@ -472,7 +554,7 @@ class WatchAgent:
                 )
             else:
                 logger.warning(
-                    f"[Watch-Agent] place_market_order nicht verfügbar – {symbol} übersprungen"
+                    f"[Watch] {symbol} | MT5: place_market_order nicht verfügbar → ✗ BLOCKIERT"
                 )
 
             # ── Ergebnis in DB speichern ────────────────────────────────────
@@ -481,7 +563,7 @@ class WatchAgent:
                     self.order_db.update_ticket(order_id, ticket)
                 if self.db is not None:
                     self.db.save_trade(signal)
-                logger.info(f"[Watch-Agent] ✅ Order ausgeführt: {symbol} Ticket={ticket}")
+                logger.info(f"[Watch] {symbol} | MT5: Order platziert → Ticket={ticket}")
 
                 # Verbose: Order-Ereignis ausgeben
                 try:

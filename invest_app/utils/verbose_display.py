@@ -328,6 +328,57 @@ def print_order_event(
     print(f"   Entry={entry:.5f}  SL={sl:.5f}  TP={tp:.5f}  CRV={crv:.1f}{pnl_str}")
 
 
+def print_watch_entry_check(
+    signals_status: list[dict],
+    config: Any = None,
+) -> None:
+    """Watch-Zyklus: Entry-Check-Status pro Signal im Terminal.
+
+    Jedes Dict in signals_status enthält:
+        instrument, entry_type, current_price, entry_price,
+        check_status ("warte" | "erfüllt" | "blockiert"),
+        block_reason (optional)
+
+    Args:
+        signals_status: Liste der geprüften Signale mit Status
+        config: Config-Objekt (optional)
+    """
+    if not _verbose_enabled(config):
+        return
+    if not signals_status:
+        return
+
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    print(f"\n{_ICON_WATCH}Watch-Check  [{ts}]  Signale: {len(signals_status)}")
+    for s in signals_status:
+        inst = s.get("instrument", "???")
+        entry_type = s.get("entry_type", "market")
+        current = float(s.get("current_price") or 0.0)
+        entry = float(s.get("entry_price") or 0.0)
+        status = s.get("check_status", "warte")
+
+        current_str = f"{current:.5f}" if current else "n/a"
+        entry_str = f"{entry:.5f}" if entry else "n/a"
+        if current and entry:
+            dist_pct = abs(current - entry) / entry * 100
+            dist_str = f"{dist_pct:.3f}%"
+        else:
+            dist_str = "n/a"
+
+        if status == "erfüllt":
+            status_str = f"{_CHECK} erfüllt"
+        elif status == "blockiert":
+            reason = s.get("block_reason", "")
+            status_str = f"{_CROSS} blockiert" + (f" ({reason})" if reason else "")
+        else:
+            status_str = ("⏳ warte" if _UTF8 else "[WAIT] warte")
+
+        print(
+            f"  {inst:<10} {entry_type:<12}  "
+            f"Preis={current_str}  Entry={entry_str}  Abstand={dist_str}  {status_str}"
+        )
+
+
 def print_learning_summary(
     insights: list[dict],
     config: Any = None,
