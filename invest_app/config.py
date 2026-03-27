@@ -52,7 +52,7 @@ _SECTIONS: dict[str, list[str]] = {
         "smc_triple_confluence_enabled", "smc_triple_bonus", "smc_double_bonus",
     ],
     "volatility": [
-        "min_atr_ratio", "max_atr_ratio",
+        "min_atr_ratio", "max_atr_ratio", "forecast_zone_atr_threshold",
         "rsi_period", "rsi_overbought", "rsi_oversold",
         "bb_period", "bb_std_dev", "bb_squeeze_threshold",
         "compression_range_ratio", "expansion_atr_multiplier",
@@ -183,6 +183,7 @@ class Config:
         # volatility
         "min_atr_ratio": 0.5,
         "max_atr_ratio": 2.0,
+        "forecast_zone_atr_threshold": 2.0,
         "rsi_period": 14,
         "rsi_overbought": 70,
         "rsi_oversold": 30,

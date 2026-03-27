@@ -196,6 +196,7 @@
   "volatility": {
     "min_atr_ratio": 0.5,
     "max_atr_ratio": 2.0,
+    "forecast_zone_atr_threshold": 2.0,
     "rsi_period": 14,
     "rsi_overbought": 70,
     "rsi_oversold": 30,

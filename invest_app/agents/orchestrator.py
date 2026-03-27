@@ -332,7 +332,8 @@ class Orchestrator:
         if nearest_level and atr_value_for_zone > 0:
             distance_to_zone = abs(nearest_level.get("price", 0.0) - current_price)
             atr_distance = distance_to_zone / atr_value_for_zone
-            is_near_zone = atr_distance <= 2.0
+            threshold = getattr(self.config, "forecast_zone_atr_threshold", 2.0)
+            is_near_zone = atr_distance <= threshold
 
         # 5. Entry-Analyse (P1.3: aktuellen Spread übergeben)
         spread_pips = 0.0
