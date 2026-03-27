@@ -326,7 +326,7 @@ class TestCheckAndExecute:
         assert signal.get("_retry_count") == 3
 
     def test_place_order_blocked_when_no_trade_connector(self):
-        """Kein trade_connector → Signal bleibt dauerhaft in Überwachung, kein Retry-Zähler."""
+        """Kein trade_connector → Fallback auf direktes pending_order.json (kein Retry-Zähler)."""
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         # trade_connector=None simuliert: MT5 nicht verfügbar (yfinance-Fallback)
@@ -336,13 +336,14 @@ class TestCheckAndExecute:
 
         executed = agent.check_and_execute()
 
-        assert len(executed) == 0
-        assert agent.pending_count == 1
-        # Kein Retry-Zähler wenn kein Connector – Signal bleibt dauerhaft überwacht
+        # Signal wird via pending_order.json-Fallback als ausgeführt markiert
+        assert len(executed) == 1
+        assert agent.pending_count == 0
+        # Kein Retry-Zähler – direkte Datei-Fallback ist kein fehlgeschlagener Versuch
         assert signal.get("_retry_count", 0) == 0
 
     def test_signal_stays_pending_indefinitely_without_trade_connector(self):
-        """Kein trade_connector → Signal wird auch nach 3+ Zyklen NICHT verworfen."""
+        """Kein trade_connector → Signal wird via Datei-Fallback im ersten Zyklus ausgeführt."""
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         agent = WatchAgent(connector=connector, trade_connector=None)
@@ -352,7 +353,8 @@ class TestCheckAndExecute:
         for _ in range(5):
             agent.check_and_execute()
 
-        assert agent.pending_count == 1
+        # Nach erstem Zyklus via Datei-Fallback ausgeführt → pending_count == 0
+        assert agent.pending_count == 0
         assert signal.get("_retry_count", 0) == 0
 
     def test_signal_id_assigned_on_add(self):

@@ -6,9 +6,13 @@ Prüft Entry-Bedingungen auf dem 1m-Chart bevor eine Order platziert wird.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -597,7 +601,13 @@ class WatchAgent:
                 if self._try_reconnect_mt5():
                     _trade_conn = self.trade_connector
                 else:
-                    logger.error(f"[Watch] {symbol} | MT5 nicht erreichbar – Order abgebrochen")
+                    logger.warning("[Watch] %s | MT5 nicht erreichbar – schreibe pending_order.json direkt", symbol)
+                    ticket = self._write_pending_order_direct(
+                        symbol, direction, lot_size, signal.get("entry_price"), stop_loss, take_profit
+                    )
+                    if ticket is not None:
+                        return ticket
+                    logger.error("[Watch] %s | Auch direkter Datei-Fallback fehlgeschlagen", symbol)
                     if self.order_db is not None:
                         self.order_db.mark_failed(order_id)
                     return None
@@ -679,6 +689,65 @@ class WatchAgent:
 
         except Exception as e:
             logger.error(f"Order-Platzierung fehlgeschlagen: {e}")
+            return None
+
+    def _write_pending_order_direct(
+        self,
+        symbol: str,
+        direction: str,
+        volume: float,
+        entry_price: Optional[float],
+        sl: Optional[float],
+        tp: Optional[float],
+    ) -> Optional[int]:
+        """Schreibt pending_order.json direkt – ohne MT5-Verbindung.
+
+        Liest mt5_common_files_path und mt5_order_file aus der Config.
+        Gibt _PENDING_FILE_TICKET zurück bei Erfolg, sonst None.
+        """
+        try:
+            cfg = self._config
+
+            # Pfad bestimmen (gleiche Logik wie MT5Connector._get_common_files_path)
+            common_path_str = getattr(cfg, "mt5_common_files_path", "") if cfg else ""
+            if common_path_str:
+                common_path = Path(common_path_str)
+            else:
+                appdata = os.environ.get("APPDATA", "")
+                if appdata:
+                    default = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+                    if default.exists():
+                        common_path = default
+                    else:
+                        output = Path(getattr(cfg, "output_dir", "Output")) if cfg else Path("Output")
+                        output.mkdir(exist_ok=True)
+                        common_path = output
+                else:
+                    output = Path(getattr(cfg, "output_dir", "Output")) if cfg else Path("Output")
+                    output.mkdir(exist_ok=True)
+                    common_path = output
+
+            order_file = getattr(cfg, "mt5_order_file", "pending_order.json") if cfg else "pending_order.json"
+            path = common_path / order_file
+
+            order = {
+                "created_at": time.time(),
+                "timestamp": time.time(),
+                "symbol": symbol,
+                "direction": "buy" if direction == "long" else "sell",
+                "volume": float(volume),
+                "sl": sl,
+                "tp": tp,
+                "comment": "InvestApp",
+                "status": "pending",
+            }
+            with open(path, "w") as f:
+                json.dump(order, f, indent=2)
+
+            logger.warning("[Watch] %s | pending_order.json geschrieben (ohne MT5-Connector): %s", symbol, path)
+            return _PENDING_FILE_TICKET
+        except Exception as e:
+            logger.error("[Watch] %s | _write_pending_order_direct fehlgeschlagen: %s", symbol, e)
             return None
 
     def sync_positions_from_mt5(self) -> None:
