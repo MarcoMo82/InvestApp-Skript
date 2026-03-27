@@ -167,7 +167,7 @@ void AnalyzeSymbol(string symbol)
    MacroResult macro = CheckMacro(symbol, g_config);
    if(!macro.isAllowed)
    {
-      LOG_D("InvestApp_Indexes", symbol, "MacroFilter: " + macro.reject_reason);
+      LOG_W("InvestApp_Indexes", symbol, "Order blocked: MacroFilter | " + macro.reject_reason);
       return;
    }
 
@@ -175,7 +175,7 @@ void AnalyzeSymbol(string symbol)
    TrendResult trend = AnalyzeTrend(symbol, g_config);
    if(trend.direction == TREND_NEUTRAL)
    {
-      LOG_D("InvestApp_Indexes", symbol, "Kein klarer Trend: " + trend.summary);
+      LOG_W("InvestApp_Indexes", symbol, "Order blocked: Kein klarer Trend | " + trend.summary);
       return;
    }
 
@@ -183,24 +183,25 @@ void AnalyzeSymbol(string symbol)
    VolatilityResult vol = CheckVolatility(symbol, g_config);
    if(!vol.isAcceptable)
    {
-      LOG_D("InvestApp_Indexes", symbol, "Volatilität: " + vol.reject_reason);
+      LOG_W("InvestApp_Indexes", symbol, "Order blocked: Volatilität | " + vol.reject_reason);
       return;
    }
    if(!IsSessionActive(g_config))
    {
-      LOG_D("InvestApp_Indexes", symbol, "Session nicht aktiv");
+      LOG_I("InvestApp_Indexes", symbol, "Order blocked: Session nicht aktiv");
       return;
    }
 
    // [4] Level-Erkennung (aus zones.json)
    SymbolZones zones;
-   LoadZones(symbol, zones);
+   if(!LoadZones(symbol, zones))
+      LOG_W("InvestApp_Indexes", symbol, "zones.json nicht geladen – Level-Filter deaktiviert, Trade möglich ohne Zone");
 
    // [5] Entry-Signal
    SignalResult signal = GetSignal(symbol, trend, zones, g_config);
    if(signal.signal == SIGNAL_NONE)
    {
-      LOG_D("InvestApp_Indexes", symbol, "Kein Signal: " + signal.summary);
+      LOG_W("InvestApp_Indexes", symbol, "Order blocked: Kein Signal | " + signal.summary);
       return;
    }
 
