@@ -26,6 +26,7 @@ struct FiltersConfig
    int    adx_min_threshold;     // Standard: 20
    int    rsi_overbought;        // Standard: 70
    int    rsi_oversold;          // Standard: 30
+   bool   bypass_session_filter; // Test-Modus: Session-Filter überspringen
 };
 
 struct EntryConfig
@@ -225,6 +226,7 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.filters.adx_min_threshold   = 20;
    cfg.filters.rsi_overbought      = 70;
    cfg.filters.rsi_oversold        = 30;
+   cfg.filters.bypass_session_filter = false;
 
    cfg.entry.sl_atr_multiplier            = 1.5;
    cfg.entry.tp_rr_ratio                  = 2.0;
@@ -279,12 +281,13 @@ void _ParseConfig(string json, AppConfig &cfg)
    sec = _JsonGetSection(json, "filters");
    if(sec != "")
    {
-      cfg.filters.min_atr_multiplier  = _JsonGetDouble(sec, "min_atr_multiplier",  cfg.filters.min_atr_multiplier);
-      cfg.filters.max_atr_multiplier  = _JsonGetDouble(sec, "max_atr_multiplier",  cfg.filters.max_atr_multiplier);
-      cfg.filters.max_spread_pips     = _JsonGetDouble(sec, "max_spread_pips",     cfg.filters.max_spread_pips);
-      cfg.filters.adx_min_threshold   = _JsonGetInt   (sec, "adx_min_threshold",   cfg.filters.adx_min_threshold);
-      cfg.filters.rsi_overbought      = _JsonGetInt   (sec, "rsi_overbought",      cfg.filters.rsi_overbought);
-      cfg.filters.rsi_oversold        = _JsonGetInt   (sec, "rsi_oversold",        cfg.filters.rsi_oversold);
+      cfg.filters.min_atr_multiplier    = _JsonGetDouble(sec, "min_atr_multiplier",    cfg.filters.min_atr_multiplier);
+      cfg.filters.max_atr_multiplier    = _JsonGetDouble(sec, "max_atr_multiplier",    cfg.filters.max_atr_multiplier);
+      cfg.filters.max_spread_pips       = _JsonGetDouble(sec, "max_spread_pips",       cfg.filters.max_spread_pips);
+      cfg.filters.adx_min_threshold     = _JsonGetInt   (sec, "adx_min_threshold",     cfg.filters.adx_min_threshold);
+      cfg.filters.rsi_overbought        = _JsonGetInt   (sec, "rsi_overbought",        cfg.filters.rsi_overbought);
+      cfg.filters.rsi_oversold          = _JsonGetInt   (sec, "rsi_oversold",          cfg.filters.rsi_oversold);
+      cfg.filters.bypass_session_filter = _JsonGetBool  (sec, "bypass_session_filter", cfg.filters.bypass_session_filter);
    }
 
    // Abschnitt "entry"

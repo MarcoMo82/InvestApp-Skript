@@ -137,6 +137,10 @@ VolatilityResult CheckVolatility(string symbol, AppConfig &cfg)
 //+------------------------------------------------------------------+
 bool IsSessionActive(AppConfig &cfg)
 {
+   // Test-Bypass: Session-Filter deaktivieren
+   if(cfg.filters.bypass_session_filter)
+      return true;
+
    MqlDateTime dt;
    TimeToStruct(TimeGMT(), dt);
    int hour = dt.hour;
