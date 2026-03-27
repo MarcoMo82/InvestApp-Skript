@@ -71,6 +71,7 @@ _SECTIONS: dict[str, list[str]] = {
         "simulation_mode_enabled",
         "simulation_trigger_after_watch_cycles", "simulation_symbol",
         "simulation_direction", "simulation_lot_size", "startup_analysis_enabled",
+        "cycle_log_enabled", "cycle_log_dir",
     ],
     "mt5": [
         "mt5_server", "mt5_common_files_path", "mt5_symbols_file", "mt5_order_file",
@@ -98,6 +99,7 @@ _SECTIONS: dict[str, list[str]] = {
     "app": [
         "trading_mode", "log_level", "log_dir", "output_dir", "db_path",
         "show_startup_banner", "show_cycle_banner",
+        "verbose_terminal_output", "verbose_show_rejected",
     ],
 }
 
@@ -226,6 +228,8 @@ class Config:
         "simulation_direction": "long",
         "simulation_lot_size": 0.01,
         "startup_analysis_enabled": True,
+        "cycle_log_enabled": True,
+        "cycle_log_dir": "logs/cycles",
         # mt5
         "mt5_server": "",
         "mt5_common_files_path": "",
@@ -277,6 +281,8 @@ class Config:
         "db_path": "invest_app.db",
         "show_startup_banner": True,
         "show_cycle_banner": True,
+        "verbose_terminal_output": True,
+        "verbose_show_rejected": True,
     }
 
     def __init__(self, config_path: Path = CONFIG_PATH):

@@ -35,6 +35,7 @@ class WatchAgent:
         chart_exporter: Optional[Any] = None,
         risk_agent: Optional[Any] = None,
         order_db: Optional[Any] = None,
+        cycle_logger: Optional[Any] = None,
     ) -> None:
         self.connector = connector
         self.db = db
@@ -43,6 +44,7 @@ class WatchAgent:
         self.chart_exporter = chart_exporter
         self.risk_agent = risk_agent
         self.order_db = order_db          # OrderDB-Instanz für persistentes Tracking
+        self.cycle_logger = cycle_logger  # Wird vom Orchestrator gesetzt
         self._pending_signals: list[dict] = []
         self._lock = threading.Lock()
         self._last_sync_ts: float = 0.0   # Letzter MT5-Sync Timestamp
@@ -480,6 +482,38 @@ class WatchAgent:
                 if self.db is not None:
                     self.db.save_trade(signal)
                 logger.info(f"[Watch-Agent] ✅ Order ausgeführt: {symbol} Ticket={ticket}")
+
+                # Verbose: Order-Ereignis ausgeben
+                try:
+                    from utils.verbose_display import print_order_event
+                    print_order_event("open", symbol, {
+                        "direction": direction,
+                        "entry_price": signal.get("entry_price", 0.0),
+                        "sl": stop_loss or 0.0,
+                        "tp": take_profit or 0.0,
+                        "crv": signal.get("crv", 0.0),
+                        "ticket": ticket,
+                    }, self._config)
+                except Exception:
+                    pass
+
+                # Tages-Log: Order persistieren
+                if self.cycle_logger is not None:
+                    try:
+                        self.cycle_logger.log_order(
+                            event="open",
+                            symbol=symbol,
+                            direction=str(direction),
+                            entry=float(signal.get("entry_price") or 0.0),
+                            sl=float(stop_loss or 0.0),
+                            tp=float(take_profit or 0.0),
+                            crv=float(signal.get("crv") or 0.0),
+                            confidence=confidence,
+                            agent_params=signal.get("agent_scores") or {},
+                        )
+                    except Exception as e:
+                        logger.warning(f"CycleLogger log_order Fehler: {e}")
+
                 return ticket
             else:
                 if self.order_db is not None and order_id is not None:
@@ -537,10 +571,72 @@ class WatchAgent:
                         pnl=deal["profit"] if deal else None,
                         closed_at=deal["close_time"] if deal else None,
                     )
-                    pnl_str = f"{deal['profit']:+.2f}" if deal else "n/a"
+                    pnl_val = deal["profit"] if deal else None
+                    pnl_str = f"{pnl_val:+.2f}" if pnl_val is not None else "n/a"
                     logger.info(
                         f"[Watch-Agent] Position geschlossen: Ticket={ticket} PnL={pnl_str}"
                     )
+
+                    # Order-Details aus DB holen für Logging
+                    order_info: dict = {}
+                    if hasattr(self.order_db, "get_order_by_ticket"):
+                        try:
+                            order_info = self.order_db.get_order_by_ticket(ticket) or {}
+                        except Exception:
+                            pass
+
+                    symbol = order_info.get("symbol", "")
+                    direction = order_info.get("direction", "")
+                    pnl_pips = float(pnl_val or 0.0)
+
+                    # Ergebnis-Klassifizierung
+                    if pnl_pips > 0:
+                        outcome = "win"
+                    elif pnl_pips < 0:
+                        outcome = "loss"
+                    else:
+                        outcome = "breakeven"
+
+                    # Verbose: Close-Event ausgeben
+                    if symbol:
+                        try:
+                            from utils.verbose_display import print_order_event
+                            print_order_event("close", symbol, {
+                                "direction": direction,
+                                "entry_price": float(order_info.get("entry_price") or 0.0),
+                                "sl": float(order_info.get("sl") or 0.0),
+                                "tp": float(order_info.get("tp") or 0.0),
+                                "crv": float(order_info.get("crv") or 0.0),
+                                "ticket": ticket,
+                                "pnl": pnl_pips,
+                            }, self._config)
+                        except Exception:
+                            pass
+
+                    # Tages-Log: Trade-Ergebnis + Order-Close
+                    if self.cycle_logger is not None and symbol:
+                        try:
+                            self.cycle_logger.log_order(
+                                event="close",
+                                symbol=symbol,
+                                direction=str(direction),
+                                entry=float(order_info.get("entry_price") or 0.0),
+                                sl=float(order_info.get("sl") or 0.0),
+                                tp=float(order_info.get("tp") or 0.0),
+                                crv=float(order_info.get("crv") or 0.0),
+                                confidence=float(order_info.get("confidence") or 0.0),
+                                agent_params={"ticket": ticket, "pnl": pnl_pips},
+                            )
+                            self.cycle_logger.log_trade_result(
+                                symbol=symbol,
+                                direction=str(direction),
+                                pnl_pips=pnl_pips,
+                                outcome=outcome,
+                                agent_params=order_info,
+                            )
+                        except Exception as e:
+                            logger.warning(f"CycleLogger log_trade_result Fehler: {e}")
+
             elif closed_tickets:
                 for ticket in closed_tickets:
                     self.order_db.update_status(ticket=ticket, status="closed")

@@ -29,6 +29,7 @@ from utils.database import Database
 from utils.correlation import has_correlated_open_position
 from utils.session import get_current_session, is_trend_trading_allowed, get_session_bonus
 from utils.zone_exporter import ZoneExporter
+from utils.cycle_logger import CycleLogger
 
 if TYPE_CHECKING:
     from agents.watch_agent import WatchAgent
@@ -88,6 +89,12 @@ class Orchestrator:
         self._cycle_count = 0
         self._daily_loss_triggered: bool = False
         self._last_cycle_date: Optional[object] = None
+
+        # Tages-Log
+        self.cycle_logger = CycleLogger(config)
+        # Wenn watch_agent vorhanden: cycle_logger weitergeben
+        if self.watch_agent is not None:
+            self.watch_agent.cycle_logger = self.cycle_logger
 
     def run_cycle(self) -> list[Signal]:
         """
@@ -150,12 +157,20 @@ class Orchestrator:
 
         symbols = self.active_symbols if self.active_symbols else getattr(self.config, "all_symbols", [])
 
+        ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        ts_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         if getattr(self.config, "show_cycle_banner", True):
             from utils.terminal_display import print_cycle_banner
-            ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-            print_cycle_banner(self._cycle_count, len(symbols), ts)
+            print_cycle_banner(self._cycle_count, len(symbols), ts_str)
+
+        # Verbose: Zyklus-Start
+        if getattr(self.config, "verbose_terminal_output", True):
+            from utils.verbose_display import print_cycle_start
+            print_cycle_start(self._cycle_count, list(symbols), ts_str, self.config)
 
         all_signals: list[Signal] = []
+        cycle_results: list[dict] = []
 
         forecast_count = 0
         for symbol in symbols:
@@ -177,6 +192,15 @@ class Orchestrator:
                         self.chart_exporter.export_zones(
                             symbol, signal.agent_scores or {}, signal
                         )
+                    # Verbose: Symbol-Analyse ausgeben
+                    if getattr(self.config, "verbose_terminal_output", True):
+                        from utils.verbose_display import print_symbol_analysis
+                        final_status = signal.zone_status or signal.status.value.lower()
+                        print_symbol_analysis(
+                            symbol, signal.agent_scores or {}, final_status, self.config
+                        )
+                    # Zyklus-Log Eintrag sammeln
+                    cycle_results.append(self._build_cycle_result(signal))
             except Exception as e:
                 logger.error(f"Fehler bei {symbol}: {e}", exc_info=True)
 
@@ -214,6 +238,17 @@ class Orchestrator:
                 self.learning_agent.run_post_cycle([])
             except Exception as e:
                 logger.warning(f"LearningAgent Fehler: {e}")
+
+        # Tages-Log: Zyklus persistieren
+        try:
+            self.cycle_logger.log_cycle(
+                cycle_nr=self._cycle_count,
+                timestamp=ts_iso,
+                symbols_analyzed=list(symbols),
+                results=cycle_results,
+            )
+        except Exception as e:
+            logger.warning(f"CycleLogger Fehler: {e}")
 
         approved = [s for s in all_signals if s.status == SignalStatus.APPROVED]
         signal_ready = [s for s in approved if s.zone_status == "signal_ready"]
@@ -636,6 +671,116 @@ class Orchestrator:
             entry_trigger_hint="Kurs nähert sich Zone – kein Entry-Setup",
             agent_scores=agent_scores,
         )
+
+    def _build_cycle_result(self, signal: Signal) -> dict:
+        """Konvertiert ein Signal in das CycleLogger-JSON-Format."""
+        agent_scores = signal.agent_scores or {}
+        direction = (
+            signal.direction.value
+            if hasattr(signal.direction, "value")
+            else str(signal.direction)
+        )
+        result: dict = {
+            "symbol": signal.instrument,
+            "zone_status": signal.zone_status or signal.status.value.lower(),
+            "direction": direction,
+            "agents": {},
+        }
+
+        # Macro
+        macro = agent_scores.get("macro") or {}
+        if macro:
+            result["agents"]["macro"] = {
+                "bias": macro.get("macro_bias", "neutral"),
+                "event_risk": macro.get("event_risk", "unknown"),
+                "approved": bool(macro.get("trading_allowed", True)),
+            }
+
+        # Trend
+        trend = agent_scores.get("trend") or {}
+        if trend:
+            trend_dir = str(trend.get("direction", "neutral"))
+            result["agents"]["trend"] = {
+                "direction": trend_dir,
+                "structure": trend.get("structure_status", ""),
+                "approved": trend_dir not in ("neutral", "sideways"),
+            }
+
+        # Volatility
+        vol = agent_scores.get("volatility") or {}
+        if vol:
+            result["agents"]["volatility"] = {
+                "atr": float(vol.get("atr_value") or 0.0),
+                "rsi": float(vol.get("rsi_value") or 0.0),
+                "approved": bool(vol.get("setup_allowed", False)),
+            }
+
+        # Level
+        level = agent_scores.get("level") or {}
+        if level:
+            nearest = level.get("nearest_level") or {}
+            result["agents"]["level"] = {
+                "zone_high": float(nearest.get("zone_high") or nearest.get("high") or 0.0),
+                "zone_low": float(nearest.get("zone_low") or nearest.get("low") or 0.0),
+                "atr_distance": float(agent_scores.get("_atr_distance") or 0.0),
+                "approved": bool(nearest),
+            }
+
+        # Entry
+        entry = agent_scores.get("entry") or {}
+        if entry:
+            result["agents"]["entry"] = {
+                "type": entry.get("entry_type", ""),
+                "trigger_price": float(entry.get("entry_price") or 0.0),
+            }
+
+        # Risk
+        risk = agent_scores.get("risk") or {}
+        if risk:
+            result["agents"]["risk"] = {
+                "sl": float(risk.get("stop_loss") or 0.0),
+                "tp": float(risk.get("take_profit") or 0.0),
+                "crv": float(risk.get("crv") or 0.0),
+                "approved": bool(risk.get("trade_allowed", False)),
+            }
+
+        # Validation
+        validation = agent_scores.get("validation") or {}
+        if validation:
+            result["agents"]["validation"] = {
+                "confidence": float(validation.get("confidence_score") or 0.0),
+                "approved": bool(validation.get("validated", False)),
+            }
+
+        # Bei Ablehnung: Ablehnungsgrund eintragen
+        if signal.status.value.lower() == "rejected":
+            rejection_agent, rejection_reason = self._find_rejection_point(agent_scores)
+            if rejection_agent:
+                result["rejection_agent"] = rejection_agent
+                result["rejection_reason"] = rejection_reason
+
+        return result
+
+    def _find_rejection_point(self, agent_scores: dict) -> tuple[str, str]:
+        """Bestimmt welcher Agent das Signal abgelehnt hat."""
+        macro = agent_scores.get("macro") or {}
+        if not macro.get("trading_allowed", True):
+            return "macro", macro.get("rejection_reason", "Makro-Freigabe verweigert")
+
+        trend = agent_scores.get("trend") or {}
+        trend_dir = str(trend.get("direction", "neutral"))
+        if trend_dir in ("neutral", "sideways"):
+            return "trend", f"Kein klarer Trend (direction={trend_dir})"
+
+        vol = agent_scores.get("vol") or {}
+        if vol and not vol.get("setup_allowed", True):
+            return "volatility", vol.get("rejection_reason", "Volatilitäts-Freigabe verweigert")
+
+        risk = agent_scores.get("risk") or {}
+        if risk and not risk.get("trade_allowed", True):
+            return "risk", risk.get("rejection_reason", "Risk-Gate abgelehnt")
+
+        return "", ""
 
     def _build_entry_trigger_hint(self, entry_result: dict, signal: Signal) -> str:
         """Erstellt einen lesbaren Hinweis worauf beim Entry gewartet wird."""

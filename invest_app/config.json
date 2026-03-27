@@ -108,7 +108,9 @@
     "startup_analysis_enabled": true,
     "news_block_enabled": true,
     "news_block_minutes_before": 30,
-    "news_block_minutes_after": 30
+    "news_block_minutes_after": 30,
+    "cycle_log_enabled": true,
+    "cycle_log_dir": "logs/cycles"
   },
   "mt5": {
     "mt5_server": "",
@@ -170,7 +172,9 @@
     "output_dir": "Output",
     "db_path": "invest_app.db",
     "show_startup_banner": true,
-    "show_cycle_banner": true
+    "show_cycle_banner": true,
+    "verbose_terminal_output": true,
+    "verbose_show_rejected": true
   },
   "correlation": {
     "correlation_check_enabled": true

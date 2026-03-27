@@ -10,7 +10,7 @@ Kein LLM-Aufruf – rein regelbasierte statistische Analyse.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -388,6 +388,250 @@ class LearningAgent(BaseAgent):
             })
 
         return suggestions
+
+    def analyze_from_logs(
+        self,
+        log_dir: str,
+        lookback_days: int = 30,
+    ) -> list[dict]:
+        """Liest alle Tages-Logs der letzten N Tage und analysiert Muster.
+
+        Analysiert:
+        1. Trefferquote pro Entry-Typ (rejection_wick vs pullback vs breakout)
+        2. Beste RSI-Range für erfolgreiche Trades
+        3. Optimaler CRV-Bereich
+        4. Welche Makro-Bias-Kombinationen am besten performen
+        5. Häufigste Ablehnungsgründe für verworfene Symbole
+
+        Args:
+            log_dir: Verzeichnis mit cycle_log_YYYY-MM-DD.json Dateien
+            lookback_days: Anzahl Tage zurück (Default: 30)
+
+        Returns:
+            Liste von Erkenntnissen mit 'type', 'finding', 'suggestion'
+        """
+        log_path = Path(log_dir)
+        if not log_path.exists():
+            self.logger.warning(f"analyze_from_logs: Verzeichnis nicht gefunden: {log_dir}")
+            return []
+
+        # Relevante Datumswerte bestimmen
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        log_files = sorted(log_path.glob("cycle_log_*.json"))
+
+        all_trade_results: list[dict] = []
+        all_cycles: list[dict] = []
+
+        for f in log_files:
+            # Datum aus Dateiname extrahieren
+            try:
+                date_str = f.stem.replace("cycle_log_", "")
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if file_date < cutoff:
+                    continue
+            except ValueError:
+                continue
+
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                all_trade_results.extend(data.get("trade_results", []))
+                all_cycles.extend(data.get("cycles", []))
+            except Exception as e:
+                self.logger.warning(f"analyze_from_logs: Fehler beim Lesen von {f.name}: {e}")
+
+        insights: list[dict] = []
+
+        # Alle Ergebnisse aus cycle-Daten extrahieren
+        all_results: list[dict] = []
+        for cycle in all_cycles:
+            for result in cycle.get("results", []):
+                all_results.append(result)
+
+        wins = [r for r in all_trade_results if r.get("outcome") == "win"]
+        losses = [r for r in all_trade_results if r.get("outcome") == "loss"]
+
+        # 1. Trefferquote pro Entry-Typ
+        entry_type_stats: dict[str, list[bool]] = {}
+        for cycle in all_cycles:
+            for result in cycle.get("results", []):
+                agents = result.get("agents") or {}
+                entry_info = agents.get("entry") or {}
+                entry_type = str(entry_info.get("type") or "").strip()
+                if not entry_type:
+                    continue
+                zone_status = result.get("zone_status", "")
+                # Nur abgeschlossene Signale (signal_ready zählt als ausgelöst)
+                if zone_status == "signal_ready":
+                    # Trade-Ergebnis aus trade_results suchen
+                    symbol = result.get("symbol", "")
+                    outcome = self._find_trade_outcome(all_trade_results, symbol)
+                    if outcome is not None:
+                        entry_type_stats.setdefault(entry_type, []).append(outcome)
+
+        for entry_type, outcomes in entry_type_stats.items():
+            if len(outcomes) >= 3:
+                win_rate = sum(outcomes) / len(outcomes) * 100
+                label = entry_type.replace("_", " ").title()
+                insights.append({
+                    "type": "entry_type_performance",
+                    "finding": f"{label} hat {win_rate:.0f}% Trefferquote ({sum(outcomes)}/{len(outcomes)} Trades)",
+                    "suggestion": f"entry_type_{entry_type}_weight {'erhöhen' if win_rate >= 60 else 'senken'}",
+                })
+
+        # 2. RSI-Range Analyse
+        rsi_win: list[float] = []
+        rsi_loss: list[float] = []
+        for cycle in all_cycles:
+            for result in cycle.get("results", []):
+                agents = result.get("agents") or {}
+                vol_info = agents.get("volatility") or {}
+                rsi = vol_info.get("rsi")
+                if rsi is None:
+                    continue
+                rsi = float(rsi)
+                symbol = result.get("symbol", "")
+                outcome = self._find_trade_outcome(all_trade_results, symbol)
+                if outcome is True:
+                    rsi_win.append(rsi)
+                elif outcome is False:
+                    rsi_loss.append(rsi)
+
+        if len(rsi_win) >= 3 and len(rsi_loss) >= 3:
+            avg_rsi_win = sum(rsi_win) / len(rsi_win)
+            avg_rsi_loss = sum(rsi_loss) / len(rsi_loss)
+            # Optimale Range bestimmen (±10 um Durchschnitt)
+            rsi_low = max(0, round(avg_rsi_win - 10, 0))
+            rsi_high = min(100, round(avg_rsi_win + 10, 0))
+            insights.append({
+                "type": "rsi_optimization",
+                "finding": (
+                    f"Trades mit RSI {rsi_low:.0f}-{rsi_high:.0f} haben "
+                    f"{len(rsi_win)/(len(rsi_win)+len(rsi_loss))*100:.0f}% Trefferquote "
+                    f"(Win-RSI Ø{avg_rsi_win:.1f} vs Loss-RSI Ø{avg_rsi_loss:.1f})"
+                ),
+                "suggestion": f"rsi_oversold_approach: Grenzwert auf {avg_rsi_win:.0f} anpassen",
+            })
+
+        # 3. Optimaler CRV-Bereich
+        crv_win: list[float] = []
+        crv_loss: list[float] = []
+        for cycle in all_cycles:
+            for result in cycle.get("results", []):
+                agents = result.get("agents") or {}
+                risk_info = agents.get("risk") or {}
+                crv = risk_info.get("crv")
+                if crv is None:
+                    continue
+                crv = float(crv)
+                symbol = result.get("symbol", "")
+                outcome = self._find_trade_outcome(all_trade_results, symbol)
+                if outcome is True:
+                    crv_win.append(crv)
+                elif outcome is False:
+                    crv_loss.append(crv)
+
+        if len(crv_win) >= 3:
+            avg_crv_win = sum(crv_win) / len(crv_win)
+            insights.append({
+                "type": "crv_optimization",
+                "finding": (
+                    f"Gewinn-Trades haben Ø CRV {avg_crv_win:.1f} "
+                    f"(Basis: {len(crv_win)} Trades)"
+                ),
+                "suggestion": (
+                    f"min_crv auf {max(2.0, round(avg_crv_win * 0.9, 1)):.1f} anpassen "
+                    "(10% unter Win-Durchschnitt)"
+                ),
+            })
+
+        # 4. Makro-Bias-Kombinationen
+        bias_stats: dict[str, list[bool]] = {}
+        for cycle in all_cycles:
+            for result in cycle.get("results", []):
+                agents = result.get("agents") or {}
+                macro_info = agents.get("macro") or {}
+                bias = str(macro_info.get("bias") or "").lower()
+                direction = str(result.get("direction") or "").lower()
+                if not bias or not direction:
+                    continue
+                combo = f"{bias}+{direction}"
+                symbol = result.get("symbol", "")
+                outcome = self._find_trade_outcome(all_trade_results, symbol)
+                if outcome is not None:
+                    bias_stats.setdefault(combo, []).append(outcome)
+
+        best_combo = None
+        best_rate = 0.0
+        for combo, outcomes in bias_stats.items():
+            if len(outcomes) >= 3:
+                rate = sum(outcomes) / len(outcomes) * 100
+                if rate > best_rate:
+                    best_rate = rate
+                    best_combo = combo
+
+        if best_combo and best_rate > 0:
+            bias_label, direction_label = best_combo.split("+", 1)
+            insights.append({
+                "type": "macro_bias_performance",
+                "finding": (
+                    f"Beste Kombination: Makro={bias_label.upper()} + {direction_label.upper()} "
+                    f"mit {best_rate:.0f}% Trefferquote"
+                ),
+                "suggestion": f"Makro-Bias {bias_label.upper()} für {direction_label}-Trades priorisieren",
+            })
+
+        # 5. Häufigste Ablehnungsgründe
+        rejection_counts: dict[str, int] = {}
+        for result in all_results:
+            if result.get("zone_status") == "rejected":
+                agent = result.get("rejection_agent", "unbekannt")
+                reason = result.get("rejection_reason", "")
+                key = f"{agent}: {reason}" if reason else agent
+                rejection_counts[key] = rejection_counts.get(key, 0) + 1
+
+        if rejection_counts:
+            top_reason, count = max(rejection_counts.items(), key=lambda x: x[1])
+            total_rejected = len([r for r in all_results if r.get("zone_status") == "rejected"])
+            pct = count / total_rejected * 100 if total_rejected > 0 else 0
+            insights.append({
+                "type": "rejection_analysis",
+                "finding": (
+                    f"Häufigster Ablehnungsgrund: '{top_reason}' "
+                    f"({count}/{total_rejected} = {pct:.0f}% aller Ablehnungen)"
+                ),
+                "suggestion": f"Filter für '{top_reason}' überprüfen und ggf. lockern",
+            })
+
+        # Ergebnis ausgeben
+        if insights:
+            try:
+                from utils.verbose_display import print_learning_summary
+                print_learning_summary(insights, self._config)
+            except Exception:
+                pass
+
+        return insights
+
+    def _find_trade_outcome(
+        self,
+        trade_results: list[dict],
+        symbol: str,
+    ) -> Optional[bool]:
+        """Sucht das letzte Trade-Ergebnis für ein Symbol.
+
+        Returns:
+            True = win, False = loss, None = nicht gefunden
+        """
+        for result in reversed(trade_results):
+            if result.get("symbol") == symbol:
+                outcome = result.get("outcome", "")
+                if outcome == "win":
+                    return True
+                if outcome == "loss":
+                    return False
+                if outcome == "breakeven":
+                    return None
+        return None
 
     def _persist(
         self,
