@@ -5,7 +5,7 @@
 //|  Architektur: OnTimer(1s) + 30s Analyse-Throttling               |
 //+------------------------------------------------------------------+
 #property copyright "InvestApp"
-#property version   "0.1"
+#property version   "1.00"
 #property strict
 
 #define EA_NAME "NASDAQ"
