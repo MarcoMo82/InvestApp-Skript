@@ -1,1 +1,2 @@
-// TODO: bereits in InvestApp_Zones.mq5
+// TradeManagement – Breakeven + ATR-Trailing (bereits in InvestApp_Zones.mq5)
+// TODO: Implementierung

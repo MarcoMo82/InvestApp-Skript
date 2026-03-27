@@ -1,1 +1,2 @@
-// TODO: JSON-Parser
+// JsonReader – JSON-Parsing Hilfsfunktionen
+// TODO: Implementierung

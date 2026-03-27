@@ -1,1 +1,2 @@
-// TODO: RiskManager
+// RiskManager – Lotgröße, SL, TP Berechnung
+// TODO: Implementierung

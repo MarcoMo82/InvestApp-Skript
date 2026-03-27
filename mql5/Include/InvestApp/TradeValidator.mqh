@@ -1,1 +1,2 @@
-// TODO: TradeValidator
+// TradeValidator – Finale Plausibilitätsprüfung vor OrderSend
+// TODO: Implementierung
