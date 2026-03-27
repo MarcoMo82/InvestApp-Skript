@@ -430,6 +430,15 @@ class Orchestrator:
         })
 
         # Scanner-Score-Faktoren anhängen (falls Scanner gelaufen ist)
+        # Marktkontext für CycleLogger / Learning Agent
+        daily_bars = ohlcv_htf.iloc[-96:] if len(ohlcv_htf) >= 96 else ohlcv_htf
+        _market_context: dict = {
+            "current_price": current_price,
+            "daily_high": round(float(daily_bars["high"].max()), 6),
+            "daily_low": round(float(daily_bars["low"].min()), 6),
+            "spread_pips": spread_pips,
+        }
+
         agent_scores_dict: dict = {
             "macro": macro_result,
             "trend": trend_result,
@@ -438,6 +447,7 @@ class Orchestrator:
             "entry": entry_result,
             "risk": risk_result,
             "validation": validation_result,
+            "_market_context": _market_context,
         }
         if self.scanner_agent is not None:
             scanner_factors = getattr(self.scanner_agent, "scored_breakdowns", {}).get(symbol)
@@ -680,15 +690,78 @@ class Orchestrator:
             if hasattr(signal.direction, "value")
             else str(signal.direction)
         )
+
+        # Teildict-Referenzen
+        mkt = agent_scores.get("_market_context") or {}
+        vol = agent_scores.get("volatility") or {}
+        trend = agent_scores.get("trend") or {}
+        macro = agent_scores.get("macro") or {}
+        entry = agent_scores.get("entry") or {}
+        risk = agent_scores.get("risk") or {}
+        validation = agent_scores.get("validation") or {}
+
+        # EMA21-Distanz berechnen (% vom aktuellen Preis)
+        ema21_distance_pct: float | None = None
+        ema_vals = trend.get("ema_values") or {}
+        ema21 = ema_vals.get("ema_21")
+        ref_close = trend.get("close") or mkt.get("current_price")
+        if ema21 and ref_close and float(ref_close) > 0:
+            ema21_distance_pct = round(abs(float(ref_close) - float(ema21)) / float(ref_close) * 100, 4)
+
+        # RSI-Zone aus rsi_status ableiten
+        rsi_status_raw = vol.get("rsi_status")
+        _rsi_zone_map = {
+            "overbought": "overbought",
+            "oversold": "oversold",
+            "above_mid": "bullish",
+            "below_mid": "bearish",
+            "neutral": "neutral",
+        }
+        rsi_zone: str | None = _rsi_zone_map.get(rsi_status_raw) if rsi_status_raw else None
+
+        # Trend-Richtung normalisiert
+        trend_direction = direction.upper() if direction not in ("neutral", "sideways") else direction
+
+        # Macro-Bias normalisiert
+        macro_bias_raw = macro.get("macro_bias") or "neutral"
+        macro_bias = macro_bias_raw.upper()
+
+        # Confidence: Signal-Score (nach Session-Bonus etc.) bevorzugen
+        confidence: float | None = (
+            round(float(signal.confidence_score), 2)
+            if signal.confidence_score
+            else (float(validation.get("confidence_score")) if validation.get("confidence_score") else None)
+        )
+
         result: dict = {
             "symbol": signal.instrument,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
             "zone_status": signal.zone_status or signal.status.value.lower(),
+            "current_price": mkt.get("current_price"),
+            "daily_high": mkt.get("daily_high"),
+            "daily_low": mkt.get("daily_low"),
+            "atr": float(vol["atr_value"]) if vol.get("atr_value") is not None else None,
+            "atr_pct": float(vol["atr_pct"]) if vol.get("atr_pct") is not None else None,
+            "rsi": float(vol["rsi"]) if vol.get("rsi") is not None else None,
+            "rsi_zone": rsi_zone,
+            "ema21_distance_pct": ema21_distance_pct,
+            "spread": mkt.get("spread_pips"),
+            "volatility_phase": vol.get("market_phase"),
+            "trend_direction": trend_direction,
+            "macro_bias": macro_bias,
+            "confidence": confidence,
+            "entry_price": (
+                float(entry["entry_price"]) if entry.get("entry_price") else
+                (float(signal.entry_price) if signal.entry_price else None)
+            ),
+            "sl": float(risk["stop_loss"]) if risk.get("stop_loss") else None,
+            "tp": float(risk["take_profit"]) if risk.get("take_profit") else None,
+            "crv": float(risk["crv"]) if risk.get("crv") else None,
             "direction": direction,
             "agents": {},
         }
 
-        # Macro
-        macro = agent_scores.get("macro") or {}
+        # Agents-Unterstruktur (für Kompatibilität mit bestehendem Format)
         if macro:
             result["agents"]["macro"] = {
                 "bias": macro.get("macro_bias", "neutral"),
@@ -696,8 +769,6 @@ class Orchestrator:
                 "approved": bool(macro.get("trading_allowed", True)),
             }
 
-        # Trend
-        trend = agent_scores.get("trend") or {}
         if trend:
             trend_dir = str(trend.get("direction", "neutral"))
             result["agents"]["trend"] = {
@@ -706,16 +777,13 @@ class Orchestrator:
                 "approved": trend_dir not in ("neutral", "sideways"),
             }
 
-        # Volatility
-        vol = agent_scores.get("volatility") or {}
         if vol:
             result["agents"]["volatility"] = {
                 "atr": float(vol.get("atr_value") or 0.0),
-                "rsi": float(vol.get("rsi_value") or 0.0),
+                "rsi": float(vol.get("rsi") or 0.0),
                 "approved": bool(vol.get("setup_allowed", False)),
             }
 
-        # Level
         level = agent_scores.get("level") or {}
         if level:
             nearest = level.get("nearest_level") or {}
@@ -726,16 +794,12 @@ class Orchestrator:
                 "approved": bool(nearest),
             }
 
-        # Entry
-        entry = agent_scores.get("entry") or {}
         if entry:
             result["agents"]["entry"] = {
                 "type": entry.get("entry_type", ""),
                 "trigger_price": float(entry.get("entry_price") or 0.0),
             }
 
-        # Risk
-        risk = agent_scores.get("risk") or {}
         if risk:
             result["agents"]["risk"] = {
                 "sl": float(risk.get("stop_loss") or 0.0),
@@ -744,8 +808,6 @@ class Orchestrator:
                 "approved": bool(risk.get("trade_allowed", False)),
             }
 
-        # Validation
-        validation = agent_scores.get("validation") or {}
         if validation:
             result["agents"]["validation"] = {
                 "confidence": float(validation.get("confidence_score") or 0.0),
