@@ -37,8 +37,12 @@ struct EntryConfig
 
 struct TradeManagementConfig
 {
-   double breakeven_trigger_rr;    // Standard: 1.0
-   double trailing_atr_multiplier; // Standard: 1.2
+   double breakeven_trigger_atr;    // Phase 1→2: Profit >= x*ATR → Breakeven (Standard: 1.0)
+   int    breakeven_buffer_pips;    // Puffer über Entry beim Breakeven-SL (Standard: 2)
+   double structure_trigger_atr;   // Phase 2→3: Profit >= x*ATR → Struktur-Trailing (Standard: 2.0)
+   double structure_sl_buffer_atr; // SL-Abstand zur Struktur in ATR (Standard: 0.25)
+   double trailing_atr_multiplier; // Phase 3: SL = Struktur - x*ATR (Standard: 1.5)
+   int    watch_poll_interval_seconds; // Polling-Intervall für TradeWatch (Standard: 60)
 };
 
 struct TradeExitConfig
@@ -214,8 +218,12 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.entry.tp_rr_ratio                  = 2.0;
    cfg.entry.signal_confidence_threshold  = 0.65;
 
-   cfg.trade_management.breakeven_trigger_rr    = 1.0;
-   cfg.trade_management.trailing_atr_multiplier = 1.2;
+   cfg.trade_management.breakeven_trigger_atr        = 1.0;
+   cfg.trade_management.breakeven_buffer_pips        = 2;
+   cfg.trade_management.structure_trigger_atr        = 2.0;
+   cfg.trade_management.structure_sl_buffer_atr      = 0.25;
+   cfg.trade_management.trailing_atr_multiplier      = 1.5;
+   cfg.trade_management.watch_poll_interval_seconds  = 60;
 
    cfg.trade_exit.use_fixed_tp                  = false;
    cfg.trade_exit.close_before_rollover_enabled = true;
@@ -275,8 +283,12 @@ void _ParseConfig(string json, AppConfig &cfg)
    sec = _JsonGetSection(json, "trade_management");
    if(sec != "")
    {
-      cfg.trade_management.breakeven_trigger_rr    = _JsonGetDouble(sec, "breakeven_trigger_rr",    cfg.trade_management.breakeven_trigger_rr);
-      cfg.trade_management.trailing_atr_multiplier = _JsonGetDouble(sec, "trailing_atr_multiplier", cfg.trade_management.trailing_atr_multiplier);
+      cfg.trade_management.breakeven_trigger_atr       = _JsonGetDouble(sec, "breakeven_trigger_atr",       cfg.trade_management.breakeven_trigger_atr);
+      cfg.trade_management.breakeven_buffer_pips       = _JsonGetInt   (sec, "breakeven_buffer_pips",       cfg.trade_management.breakeven_buffer_pips);
+      cfg.trade_management.structure_trigger_atr       = _JsonGetDouble(sec, "structure_trigger_atr",       cfg.trade_management.structure_trigger_atr);
+      cfg.trade_management.structure_sl_buffer_atr     = _JsonGetDouble(sec, "structure_sl_buffer_atr",     cfg.trade_management.structure_sl_buffer_atr);
+      cfg.trade_management.trailing_atr_multiplier     = _JsonGetDouble(sec, "trailing_atr_multiplier",     cfg.trade_management.trailing_atr_multiplier);
+      cfg.trade_management.watch_poll_interval_seconds = _JsonGetInt   (sec, "watch_poll_interval_seconds", cfg.trade_management.watch_poll_interval_seconds);
    }
 
    // Abschnitt "trade_exit"

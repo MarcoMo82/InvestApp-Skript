@@ -91,9 +91,13 @@ void AnalyzeSymbol(string symbol)
 
    // [2] Trend-Analyse
    TrendResult trend = AnalyzeTrend(symbol, g_config);
-   if(trend.bias == 0)
+   // Richtung kommt vom EntrySignal – hier noch kein Filter; nur loggen
+   if(!IsTrendAligned(trend, /* signal_direction */ 0))
+      LOG_D("InvestApp_Indexes", symbol, "Trend nicht ausgerichtet: " + trend.summary);
+
+   if(trend.direction == TREND_NEUTRAL)
    {
-      LOG_D("InvestApp_Indexes", symbol, "Kein klarer Trend");
+      LOG_D("InvestApp_Indexes", symbol, "Kein klarer Trend: " + trend.summary);
       return;
    }
 
@@ -113,14 +117,13 @@ void AnalyzeSymbol(string symbol)
    // [4] Level-Erkennung (aus zones.json)
    // TODO: LevelData levels = LevelDetection.GetZones(symbol);
 
-   // [5] Entry-Signal
-   // TODO: SignalResult signal = EntrySignal.GetSignal(symbol, trendBias, levels);
+   // [5] Entry-Signal (trend als Parameter weitergeben sobald EntrySignal implementiert)
+   // TODO: SignalResult signal = EntrySignal.GetSignal(symbol, trend, levels);
    // TODO: if(signal.type == SIGNAL_NONE) return;
 
-   // [6] Validierung (direction kommt vom EntrySignal – vorerst trend.bias als Platzhalter)
-   RiskResult risk_placeholder; risk_placeholder.isValid = false; // bis RiskManager aufgerufen wird
-   // ValidationResult val = ValidateTrade(symbol, trend.bias, risk_placeholder, g_config);
-   // Wird aktiviert sobald EntrySignal + RiskManager vollständig integriert sind
+   // [6] Validierung (direction kommt vom EntrySignal)
+   // ValidationResult val = ValidateTrade(symbol, signal.direction, g_config);
+   // if(!val.isValid) { LOG_W("InvestApp_Indexes", symbol, "Validierung: " + val.reject_reason); return; }
 
    // [7] Risiko berechnen
    // TODO: RiskResult risk = RiskManager.Calculate(symbol, signal);

@@ -231,7 +231,11 @@
   },
   "trade_management": {
     "_comment": "Breakeven + Trailing werden vollständig vom MQL5 EA verwaltet. Python liest nur Status.",
-    "breakeven_atr_multiplier": 1.0,
+    "_comment_phases": "Phase 1→2: Breakeven | Phase 2→3: Struktur-Trailing | Phase 3: ATR-Trailing aktiv",
+    "breakeven_trigger_atr": 1.0,
+    "breakeven_buffer_pips": 2,
+    "structure_trigger_atr": 2.0,
+    "structure_sl_buffer_atr": 0.25,
     "trailing_atr_multiplier": 1.5,
     "watch_poll_interval_seconds": 60
   },
