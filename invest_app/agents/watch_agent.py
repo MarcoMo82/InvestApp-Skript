@@ -530,16 +530,20 @@ class WatchAgent:
                         f"bestehend={max_conf:.0f}% → ✓ 2. Order erlaubt"
                     )
 
-            # ── Order-ID in DB anlegen (status=pending) ─────────────────────
-            order_id = None
+            # ── Order-ID (UUID) generieren und in DB anlegen (status=pending) ─
+            order_id = str(uuid.uuid4())
+            signal_id = signal.get("id")
             if self.order_db is not None:
-                order_id = self.order_db.add_order(
+                self.order_db.add_order(
+                    id=order_id,
                     symbol=symbol,
                     direction=direction,
                     sl=stop_loss or 0.0,
                     tp=take_profit or 0.0,
                     confidence=confidence,
                     lot_size=lot_size,
+                    crv=float(signal.get("crv") or 0.0),
+                    signal_id=signal_id,
                 )
 
             # ── Order senden ────────────────────────────────────────────────
@@ -559,11 +563,12 @@ class WatchAgent:
 
             # ── Ergebnis in DB speichern ────────────────────────────────────
             if ticket is not None:
-                if self.order_db is not None and order_id is not None:
-                    self.order_db.update_ticket(order_id, ticket)
-                if self.db is not None:
-                    self.db.save_trade(signal)
-                logger.info(f"[Watch] {symbol} | MT5: Order platziert → Ticket={ticket}")
+                if self.order_db is not None:
+                    self.order_db.set_mt5_ticket(order_id, ticket)
+                # invest_app.db: Archivierung erfolgt erst beim Close (in sync_positions_from_mt5)
+                logger.info(
+                    f"[Watch] {symbol} | Order erstellt: UUID={order_id} | MT5-Ticket={ticket}"
+                )
 
                 # Verbose: Order-Ereignis ausgeben
                 try:
@@ -598,7 +603,7 @@ class WatchAgent:
 
                 return ticket
             else:
-                if self.order_db is not None and order_id is not None:
+                if self.order_db is not None:
                     self.order_db.mark_failed(order_id)
                 return None
 
@@ -646,7 +651,7 @@ class WatchAgent:
 
                 for ticket in closed_tickets:
                     deal = deals_by_ticket.get(ticket)
-                    self.order_db.update_status(
+                    self.order_db.update_order_status(
                         ticket=ticket,
                         status="closed",
                         close_price=deal["close_price"] if deal else None,
@@ -695,6 +700,34 @@ class WatchAgent:
                         except Exception:
                             pass
 
+                    # invest_app.db: geschlossenen Trade archivieren
+                    if self.db is not None and order_info:
+                        try:
+                            close_dt = None
+                            if deal and deal.get("close_time"):
+                                from datetime import timezone as _tz
+                                close_dt = datetime.fromtimestamp(
+                                    deal["close_time"], tz=_tz.utc
+                                )
+                            archive = {
+                                "id": order_info.get("id", str(uuid.uuid4())),
+                                "signal_id": order_info.get("signal_id") or order_info.get("id", ""),
+                                "mt5_ticket": ticket,
+                                "instrument": order_info.get("symbol", ""),
+                                "direction": order_info.get("direction", ""),
+                                "entry_price": order_info.get("entry_price", 0.0),
+                                "sl": order_info.get("sl", 0.0),
+                                "tp": order_info.get("tp", 0.0),
+                                "lot_size": order_info.get("lot_size", 0.0),
+                                "status": "closed",
+                                "close_price": deal["close_price"] if deal else None,
+                                "pnl": deal["profit"] if deal else None,
+                                "close_time": close_dt,
+                            }
+                            self.db.save_trade(archive)
+                        except Exception as _e:
+                            logger.warning(f"[Watch-Agent] invest_app.db Archivierung Fehler: {_e}")
+
                     # Tages-Log: Trade-Ergebnis + Order-Close
                     if self.cycle_logger is not None and symbol:
                         try:
@@ -721,7 +754,7 @@ class WatchAgent:
 
             elif closed_tickets:
                 for ticket in closed_tickets:
-                    self.order_db.update_status(ticket=ticket, status="closed")
+                    self.order_db.update_order_status(ticket=ticket, status="closed")
 
             self._last_sync_ts = datetime.now(timezone.utc).timestamp()
 

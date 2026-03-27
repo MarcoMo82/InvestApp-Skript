@@ -1,27 +1,27 @@
 """
 order_db.py – SQLite-basiertes Order-Tracking für InvestApp
 
-Speichert alle Orders (pending/open/closed) persistent.
-Watch Agent synct regelmäßig den Status mit MT5.
+orders.db = operative Source of Truth für aktive Orders und Trades.
+Jede Order hat eine interne UUID (PK) + optionales MT5-Ticket (nach Ausführung).
 """
 
 import sqlite3
 import threading
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
 
 
 class OrderDB:
-    """Thread-sicheres SQLite Order-Tracking."""
+    """Thread-sicheres SQLite Order-Tracking (UUID-PK + MT5-Ticket)."""
 
-    def __init__(self, db_path: "Union[str, Path]"):
+    def __init__(self, db_path: Union[str, Path]) -> None:
         self.db_path = Path(str(db_path))
         self._in_memory = str(db_path) == ":memory:"
         if not self._in_memory:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        # Für :memory: eine persistente shared connection halten
         self._shared_conn: Optional[sqlite3.Connection] = (
             sqlite3.connect(":memory:", check_same_thread=False)
             if self._in_memory else None
@@ -29,46 +29,112 @@ class OrderDB:
         self._init_db()
 
     # ------------------------------------------------------------------
-    # Initialisierung
+    # Initialisierung & Migration
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            self._migrate_schema(conn)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS orders (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id              TEXT    PRIMARY KEY,           -- UUID, intern generiert
+                    mt5_ticket      INTEGER UNIQUE,                -- MT5-Ticket nach Ausführung (nullable)
                     symbol          TEXT    NOT NULL,
-                    direction       TEXT    NOT NULL,   -- 'buy' | 'sell'
+                    direction       TEXT    NOT NULL,              -- 'buy' | 'sell'
                     entry_price     REAL,
                     sl              REAL,
                     tp              REAL,
+                    crv             REAL    DEFAULT 0,
                     confidence      REAL    DEFAULT 0,
                     lot_size        REAL,
-                    ticket          INTEGER,            -- MT5 Ticket-Nr
+                    signal_id       TEXT,                          -- FK zu invest_app.db signals (nullable)
                     status          TEXT    DEFAULT 'pending',
                     -- pending | open | closed | cancelled | failed
                     magic           INTEGER DEFAULT 20260324,
                     comment         TEXT    DEFAULT '',
-                    created_at      REAL    NOT NULL,   -- Unix-Timestamp
+                    created_at      REAL    NOT NULL,
+                    updated_at      REAL,
                     opened_at       REAL,
                     closed_at       REAL,
                     close_price     REAL,
                     pnl             REAL
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_orders_symbol  ON orders(symbol);
-                CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
-                CREATE INDEX IF NOT EXISTS idx_orders_ticket  ON orders(ticket);
+                CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
+                CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
                 CREATE TABLE IF NOT EXISTS symbols (
                     symbol      TEXT PRIMARY KEY,
-                    category    TEXT,               -- forex/crypto/stock
+                    category    TEXT,
                     score       REAL DEFAULT 0,
-                    active      INTEGER DEFAULT 1,  -- 1=aktiv, 0=inaktiv
-                    last_seen   REAL,               -- Unix-Timestamp letzter Scanner-Lauf
+                    active      INTEGER DEFAULT 1,
+                    last_seen   REAL,
                     updated_at  REAL
                 );
             """)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Migriert altes INTEGER-ID-Schema (ticket) zu neuem UUID+mt5_ticket-Schema."""
+        cursor = conn.execute("PRAGMA table_info(orders)")
+        cols = {row[1]: row[2] for row in cursor.fetchall()}
+
+        if not cols:
+            return  # Tabelle existiert noch nicht → wird in _init_db erstellt
+
+        has_mt5_ticket = "mt5_ticket" in cols
+
+        if not has_mt5_ticket:
+            # Vollmigration: altes Schema (INTEGER id, ticket) → neues Schema
+            conn.executescript("""
+                ALTER TABLE orders RENAME TO orders_v1;
+
+                CREATE TABLE orders (
+                    id              TEXT    PRIMARY KEY,
+                    mt5_ticket      INTEGER UNIQUE,
+                    symbol          TEXT    NOT NULL,
+                    direction       TEXT    NOT NULL,
+                    entry_price     REAL,
+                    sl              REAL,
+                    tp              REAL,
+                    crv             REAL    DEFAULT 0,
+                    confidence      REAL    DEFAULT 0,
+                    lot_size        REAL,
+                    signal_id       TEXT,
+                    status          TEXT    DEFAULT 'pending',
+                    magic           INTEGER DEFAULT 20260324,
+                    comment         TEXT    DEFAULT '',
+                    created_at      REAL    NOT NULL,
+                    updated_at      REAL,
+                    opened_at       REAL,
+                    closed_at       REAL,
+                    close_price     REAL,
+                    pnl             REAL
+                );
+
+                INSERT INTO orders
+                    (id, mt5_ticket, symbol, direction, entry_price, sl, tp,
+                     confidence, lot_size, status, magic, comment,
+                     created_at, opened_at, closed_at, close_price, pnl)
+                SELECT
+                    CAST(id AS TEXT), ticket, symbol, direction, entry_price, sl, tp,
+                    confidence, lot_size, status, magic, comment,
+                    created_at, opened_at, closed_at, close_price, pnl
+                FROM orders_v1;
+
+                DROP TABLE orders_v1;
+
+                CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
+                CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+            """)
+        else:
+            # Nur fehlende Spalten ergänzen (ALTER TABLE)
+            for col, ddl in [
+                ("crv",       "ALTER TABLE orders ADD COLUMN crv REAL DEFAULT 0"),
+                ("signal_id", "ALTER TABLE orders ADD COLUMN signal_id TEXT"),
+                ("updated_at","ALTER TABLE orders ADD COLUMN updated_at REAL"),
+            ]:
+                if col not in cols:
+                    conn.execute(ddl)
 
     def _connect(self) -> sqlite3.Connection:
         if self._in_memory and self._shared_conn is not None:
@@ -93,58 +159,77 @@ class OrderDB:
         lot_size: float,
         entry_price: float = 0.0,
         comment: str = "InvestApp",
-    ) -> int:
-        """Neue Order anlegen, gibt order_id zurück."""
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO orders
-                    (symbol, direction, entry_price, sl, tp, confidence,
-                     lot_size, comment, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-                """,
-                (symbol, direction, entry_price, sl, tp, confidence,
-                 lot_size, comment, datetime.utcnow().timestamp()),
-            )
-            return cur.lastrowid
+        id: Optional[str] = None,
+        crv: float = 0.0,
+        signal_id: Optional[str] = None,
+    ) -> str:
+        """Neue Order anlegen. Generiert UUID automatisch wenn keine id übergeben wird.
 
-    def update_ticket(self, order_id: int, ticket: int) -> None:
-        """MT5-Ticket nach Ausführung eintragen."""
+        Returns:
+            order_id (UUID als str)
+        """
+        order_id = id or str(uuid.uuid4())
+        now = datetime.now(timezone.utc).timestamp()
         with self._lock, self._connect() as conn:
             conn.execute(
-                "UPDATE orders SET ticket=?, status='open', opened_at=? WHERE id=?",
-                (ticket, datetime.utcnow().timestamp(), order_id),
+                """
+                INSERT INTO orders
+                    (id, symbol, direction, entry_price, sl, tp, crv, confidence,
+                     lot_size, comment, signal_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (order_id, symbol, direction, entry_price, sl, tp, crv, confidence,
+                 lot_size, comment, signal_id, now, now),
+            )
+        return order_id
+
+    def set_mt5_ticket(self, order_id: str, ticket: int) -> None:
+        """MT5-Ticket nach erfolgreicher Ausführung eintragen. Setzt Status → 'open'."""
+        now = datetime.now(timezone.utc).timestamp()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE orders SET mt5_ticket=?, status='open', opened_at=?, updated_at=? WHERE id=?",
+                (ticket, now, now, order_id),
             )
 
-    def update_status(
+    def update_order_status(
         self,
-        ticket: int,
         status: str,
+        order_id: Optional[str] = None,
+        ticket: Optional[int] = None,
         close_price: Optional[float] = None,
         pnl: Optional[float] = None,
         closed_at: Optional[float] = None,
     ) -> None:
-        """Status einer Order aktualisieren (über MT5-Ticket)."""
+        """Status einer Order aktualisieren – Lookup über order_id (UUID) oder mt5_ticket."""
+        now = datetime.now(timezone.utc).timestamp()
         with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE orders
-                SET status=?, close_price=?, pnl=?, closed_at=?
-                WHERE ticket=?
-                """,
-                (
-                    status,
-                    close_price,
-                    pnl,
-                    closed_at or datetime.utcnow().timestamp(),
-                    ticket,
-                ),
-            )
+            if order_id is not None:
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET status=?, close_price=?, pnl=?, closed_at=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (status, close_price, pnl, closed_at or now, now, order_id),
+                )
+            elif ticket is not None:
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET status=?, close_price=?, pnl=?, closed_at=?, updated_at=?
+                    WHERE mt5_ticket=?
+                    """,
+                    (status, close_price, pnl, closed_at or now, now, ticket),
+                )
 
-    def mark_failed(self, order_id: int) -> None:
+    def mark_failed(self, order_id: str) -> None:
+        """Order als fehlgeschlagen markieren."""
+        now = datetime.now(timezone.utc).timestamp()
         with self._lock, self._connect() as conn:
             conn.execute(
-                "UPDATE orders SET status='failed' WHERE id=?", (order_id,)
+                "UPDATE orders SET status='failed', updated_at=? WHERE id=?",
+                (now, order_id),
             )
 
     def upsert_open_position(
@@ -159,28 +244,28 @@ class OrderDB:
         profit: float,
     ) -> None:
         """MT5-Position in DB eintragen falls noch nicht vorhanden."""
+        now = datetime.now(timezone.utc).timestamp()
         with self._lock, self._connect() as conn:
             existing = conn.execute(
-                "SELECT id FROM orders WHERE ticket=?", (ticket,)
+                "SELECT id FROM orders WHERE mt5_ticket=?", (ticket,)
             ).fetchone()
             if existing:
                 conn.execute(
-                    "UPDATE orders SET pnl=?, sl=?, tp=? WHERE ticket=?",
-                    (profit, sl, tp, ticket),
+                    "UPDATE orders SET pnl=?, sl=?, tp=?, updated_at=? WHERE mt5_ticket=?",
+                    (profit, sl, tp, now, ticket),
                 )
             else:
+                new_id = str(uuid.uuid4())
                 conn.execute(
                     """
                     INSERT INTO orders
-                        (symbol, direction, entry_price, sl, tp, lot_size,
-                         ticket, status, created_at, opened_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+                        (id, symbol, direction, entry_price, sl, tp, lot_size,
+                         mt5_ticket, status, created_at, updated_at, opened_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
                     """,
                     (
-                        symbol, direction, entry_price, sl, tp, lot_size,
-                        ticket,
-                        datetime.utcnow().timestamp(),
-                        datetime.utcnow().timestamp(),
+                        new_id, symbol, direction, entry_price, sl, tp, lot_size,
+                        ticket, now, now, now,
                     ),
                 )
 
@@ -201,6 +286,14 @@ class OrderDB:
                     "SELECT * FROM orders WHERE status IN ('pending','open') ORDER BY created_at"
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_order_by_ticket(self, ticket: int) -> Optional[dict]:
+        """Order über MT5-Ticket suchen."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE mt5_ticket=?", (ticket,)
+            ).fetchone()
+            return dict(row) if row else None
 
     def get_order_count(self, symbol: str) -> int:
         """Anzahl pending/open Orders für ein Symbol."""
@@ -233,7 +326,7 @@ class OrderDB:
         """Alle MT5-Tickets mit Status open/pending."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT ticket FROM orders WHERE status IN ('open','pending') AND ticket IS NOT NULL"
+                "SELECT mt5_ticket FROM orders WHERE status IN ('open','pending') AND mt5_ticket IS NOT NULL"
             ).fetchall()
             return {r[0] for r in rows}
 
@@ -243,7 +336,7 @@ class OrderDB:
 
     def save_symbols(self, symbols: list[dict]) -> None:
         """Speichert/aktualisiert Symbol-Liste (upsert), setzt last_seen auf jetzt."""
-        now = datetime.utcnow().timestamp()
+        now = datetime.now(timezone.utc).timestamp()
         with self._lock, self._connect() as conn:
             for sym in symbols:
                 conn.execute(

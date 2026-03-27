@@ -1,5 +1,11 @@
 """
 SQLite-Datenbankanbindung via SQLAlchemy für Signale, Trades und Performance.
+
+invest_app.db = analytisches Archiv (Signale, geschlossene Trades, Agent-Logs, Performance)
+orders.db    = operative Daten (aktive/pending Orders) → data/order_db.py
+
+Schreibregel: invest_app.db erhält Trade-Einträge erst wenn status='closed' (Archivierung).
+              Offene/pending Orders werden ausschließlich in orders.db geführt.
 """
 
 from __future__ import annotations
