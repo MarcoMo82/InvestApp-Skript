@@ -114,13 +114,14 @@ class RiskAgent(BaseAgent):
                     f"Max. offene Positionen erreicht ({open_positions}/{max_pos})"
                 )
 
-        # Handbuch Kap. 8.3: Gesamtexposure ≤ 3% des Kontos
+        # Handbuch Kap. 8.3: Gesamtexposure ≤ max_exposure_pct des Kontos
         total_open_risk_pct = data.get("total_open_risk_pct", 0.0)
         new_risk_pct = self.risk_per_trade
-        if total_open_risk_pct + new_risk_pct > 0.03:
+        max_exposure = getattr(self._config, "max_exposure_pct", 0.03) if self._config is not None else 0.03
+        if total_open_risk_pct + new_risk_pct > max_exposure:
             return self._rejected(
                 symbol,
-                f"Gesamtexposure {(total_open_risk_pct + new_risk_pct):.1%} überschreitet 3%-Limit"
+                f"Gesamtexposure {(total_open_risk_pct + new_risk_pct):.1%} überschreitet {max_exposure:.1%}-Limit"
             )
         pip_value = data.get("pip_value", 10.0)
         pip_size = data.get("pip_size", self._infer_pip_size(symbol, entry_price))
@@ -164,16 +165,19 @@ class RiskAgent(BaseAgent):
         # Instrument-abhängige SL-Grenze prüfen
         max_sl = self._get_max_sl_distance(entry_price, atr)
         if sl_distance > max_sl:
-            instrument_type = "Forex (80 Pips)" if entry_price < 100 else "Aktie/Index (3%)"
+            max_pips = getattr(self._config, "forex_max_sl_pips", 80) if self._config is not None else 80
+            stock_pct = getattr(self._config, "stock_max_sl_pct", 0.03) if self._config is not None else 0.03
+            instrument_type = f"Forex ({max_pips} Pips)" if entry_price < 100 else f"Aktie/Index ({stock_pct:.0%})"
             return self._rejected(
                 symbol,
                 f"SL-Distanz {sl_distance:.5f} überschreitet Maximum {max_sl:.5f} ({instrument_type})"
             )
 
-        # 3%-Grenze: SL > 3% des Entry-Preises → Trade verwerfen
+        # max_sl_pct-Grenze: SL > max_sl_pct des Entry-Preises → Trade verwerfen
+        max_sl_pct = getattr(self._config, "max_sl_pct", 0.03) if self._config is not None else 0.03
         sl_pct = sl_distance / entry_price if entry_price > 0 else 0.0
-        if sl_pct > 0.03:
-            return self._rejected(symbol, f"SL > 3% des Preises ({sl_pct:.2%})")
+        if sl_pct > max_sl_pct:
+            return self._rejected(symbol, f"SL > {max_sl_pct:.0%} des Preises ({sl_pct:.2%})")
 
         # CRV berechnen
         sl_diff = abs(entry_price - stop_loss)
@@ -232,19 +236,19 @@ class RiskAgent(BaseAgent):
         # Auf 2 Dezimalstellen runden (Standard-Lot-Schrittweite)
         return round(lot, 2)
 
-    @staticmethod
-    def _get_max_sl_distance(entry_price: float, atr: float) -> float:
+    def _get_max_sl_distance(self, entry_price: float, atr: float) -> float:
         """
         Instrument-Typ aus Preisgröße ableiten:
-        - Forex (Preis < 100): max 80 Pips = 80 × 0.0001 = 0.008
-        - Aktien/Indices (Preis >= 100): max 3% des Entry-Preises
+        - Forex (Preis < 100): max forex_max_sl_pips Pips
+        - Aktien/Indices (Preis >= 100): max stock_max_sl_pct des Entry-Preises
         """
+        max_pips = getattr(self._config, "forex_max_sl_pips", 80) if self._config is not None else 80
+        stock_max_pct = getattr(self._config, "stock_max_sl_pct", 0.03) if self._config is not None else 0.03
         if entry_price < 100:  # Forex
             pip_size = 0.0001
-            max_pips = 80
             return max_pips * pip_size
         else:  # Aktien, Indices
-            return entry_price * 0.03
+            return entry_price * stock_max_pct
 
     @staticmethod
     def _infer_pip_size(symbol: str, price: float) -> float:
@@ -269,20 +273,21 @@ class RiskAgent(BaseAgent):
         # Standard Forex: 4 Nachkommastellen → Pip = 0.0001
         return 0.0001
 
-    @staticmethod
     def _calculate_swing_sl(
+        self,
         ohlcv: Optional[pd.DataFrame], direction: str, entry_price: float
     ) -> Optional[float]:
         """
         Berechnet technischen SL aus den letzten 5 Bars (Swing-Low/High).
-        Long: Swing-Low der letzten 5 Bars − 2-Pip-Puffer
-        Short: Swing-High der letzten 5 Bars + 2-Pip-Puffer
+        Long: Swing-Low der letzten 5 Bars − swing_sl_buffer_pct-Puffer
+        Short: Swing-High der letzten 5 Bars + swing_sl_buffer_pct-Puffer
         """
         if ohlcv is None or len(ohlcv) < 6:
             return None
 
         recent = ohlcv.iloc[-6:-1]  # letzte 5 abgeschlossene Bars
-        tick_puffer = entry_price * 0.0002  # ~2 Pips Puffer
+        buffer_pct = getattr(self._config, "swing_sl_buffer_pct", 0.0002) if self._config is not None else 0.0002
+        tick_puffer = entry_price * buffer_pct
 
         if direction == "long":
             return float(recent["low"].min()) - tick_puffer
@@ -317,12 +322,14 @@ class RiskAgent(BaseAgent):
         # Strukturbasierter Swing aus OHLCV ableiten (Handbuch Kap. 8.4)
         structural_swing = self._structural_trailing_stop(direction, ohlcv)
 
+        trailing_mult = getattr(self._config, "trailing_stop_atr_multiplier", 2.0) if self._config is not None else 2.0
+
         if direction == "long":
             one_to_one = entry_price + sl_distance
             if current_price < one_to_one:
                 return current_sl  # 1:1 noch nicht erreicht
 
-            new_sl = current_price - (atr * 2.0)
+            new_sl = current_price - (atr * trailing_mult)
             if ema21 is not None:
                 new_sl = max(new_sl, ema21)
             if recent_swing is not None:
@@ -337,7 +344,7 @@ class RiskAgent(BaseAgent):
             if current_price > one_to_one:
                 return current_sl  # 1:1 noch nicht erreicht
 
-            new_sl = current_price + (atr * 2.0)
+            new_sl = current_price + (atr * trailing_mult)
             if ema21 is not None:
                 new_sl = min(new_sl, ema21)
             if recent_swing is not None:

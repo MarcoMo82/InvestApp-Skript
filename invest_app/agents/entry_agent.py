@@ -84,7 +84,7 @@ class EntryAgent(BaseAgent):
         smc_meta = self._compute_smc_meta(df, direction, close, nearest_level, atr)
 
         # === Kap. 5: Chart-Muster (optionaler Confidence-Bonus) ===
-        pattern_bonus = get_pattern_confidence_bonus(df, direction)
+        pattern_bonus = get_pattern_confidence_bonus(df, direction, self._config)
         if pattern_bonus > 0:
             smc_meta = dict(smc_meta)
             smc_meta["smc_confidence_bonus"] = smc_meta.get("smc_confidence_bonus", 0) + pattern_bonus
@@ -100,9 +100,10 @@ class EntryAgent(BaseAgent):
                 if "volume" in df.columns and len(df) >= 20:
                     vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
                     current_vol = float(df["volume"].iloc[-1])
-                    if vol_avg_20 > 0 and current_vol < vol_avg_20 * 1.5:
+                    vol_mult = getattr(self._config, "volume_confirmation_multiplier", 1.5) if self._config is not None else 1.5
+                    if vol_avg_20 > 0 and current_vol < vol_avg_20 * vol_mult:
                         return self._no_entry(
-                            symbol, "Breakout ohne Volumenbestätigung (< 150% Durchschnitt)"
+                            symbol, f"Breakout ohne Volumenbestätigung (< {vol_mult:.0%} Durchschnitt)"
                         )
 
                 return {
@@ -203,13 +204,14 @@ class EntryAgent(BaseAgent):
         if range_ == 0:
             return {"found": False}
 
+        wick_ratio = getattr(self._config, "wick_body_ratio_min", 2.0) if self._config is not None else 2.0
         if direction == "long":
             # Preis testet Level von oben mit langem unterem Wick
-            # Handbuch Kap. 7.3: Wick ≥ 2× Body
+            # Handbuch Kap. 7.3: Wick ≥ wick_body_ratio_min× Body
             lower_wick = min(open_, close) - low
             if (abs(low - level) <= tolerance
                     and body > 0
-                    and (lower_wick / body) >= 2.0
+                    and (lower_wick / body) >= wick_ratio
                     and close > open_):
                 return {
                     "found": True,
@@ -221,7 +223,7 @@ class EntryAgent(BaseAgent):
             upper_wick = high - max(open_, close)
             if (abs(high - level) <= tolerance
                     and body > 0
-                    and (upper_wick / body) >= 2.0
+                    and (upper_wick / body) >= wick_ratio
                     and close < open_):
                 return {
                     "found": True,
@@ -247,10 +249,11 @@ class EntryAgent(BaseAgent):
         impulse_low = float(df["low"].iloc[-lookback:].min())
         impulse_size = abs(impulse_high - impulse_low)
 
+        max_fib = getattr(self._config, "pullback_max_fib", 0.618) if self._config is not None else 0.618
         if direction == "long":
             if impulse_size > 0:
                 pullback_depth = abs(last_close - impulse_high) / impulse_size
-                if pullback_depth > 0.618:
+                if pullback_depth > max_fib:
                     return {"found": False}  # Pullback zu tief
 
             # Preis zieht zur EMA zurück und bounced (Schlusskurs über EMA, vorher darunter)
@@ -266,7 +269,7 @@ class EntryAgent(BaseAgent):
         elif direction == "short":
             if impulse_size > 0:
                 pullback_depth = abs(last_close - impulse_low) / impulse_size
-                if pullback_depth > 0.618:
+                if pullback_depth > max_fib:
                     return {"found": False}  # Pullback zu tief
 
             if (abs(last_close - ema_21) <= tolerance
@@ -307,25 +310,29 @@ class EntryAgent(BaseAgent):
         if len(lookback) < 5:
             return {"found": False}
 
-        sweep_tolerance_min = atr * 0.1
-        sweep_tolerance_max = atr * 0.5
+        sweep_min_mult = getattr(self._config, "stop_hunt_sweep_min_atr", 0.1) if self._config is not None else 0.1
+        sweep_max_mult = getattr(self._config, "stop_hunt_sweep_max_atr", 0.5) if self._config is not None else 0.5
+        wick_ratio_sh = getattr(self._config, "wick_body_ratio_min", 2.0) if self._config is not None else 2.0
+        vol_mult_sh = getattr(self._config, "volume_confirmation_multiplier", 1.5) if self._config is not None else 1.5
+        sweep_tolerance_min = atr * sweep_min_mult
+        sweep_tolerance_max = atr * sweep_max_mult
 
         if direction == "long":
             swing_low = float(lookback["low"].min())
-            # Kriterium 1: Wick hat das Swing-Low um max. 0.5 ATR unterschritten
+            # Kriterium 1: Wick hat das Swing-Low um max. sweep_max_mult ATR unterschritten
             sweep_depth = swing_low - low
             if not (sweep_tolerance_min <= sweep_depth <= sweep_tolerance_max):
                 return {"found": False}
             # Kriterium 2: Schlusskurs zurück über Swing-Low
             if close <= swing_low:
                 return {"found": False}
-            # Kriterium 3: Rejection-Wick ≥ 2× Body oder Volumenbestätigung
+            # Kriterium 3: Rejection-Wick ≥ wick_ratio_sh× Body oder Volumenbestätigung
             lower_wick = min(open_, close) - low
-            wick_ok = body > 0 and (lower_wick / body) >= 2.0
+            wick_ok = body > 0 and (lower_wick / body) >= wick_ratio_sh
             vol_ok = False
             if "volume" in df.columns and len(df) >= 20:
                 vol_avg = float(df["volume"].rolling(20).mean().iloc[-1])
-                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * 1.5
+                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * vol_mult_sh
             if not (wick_ok or vol_ok):
                 return {"found": False}
             return {
@@ -346,11 +353,11 @@ class EntryAgent(BaseAgent):
             if close >= swing_high:
                 return {"found": False}
             upper_wick = high - max(open_, close)
-            wick_ok = body > 0 and (upper_wick / body) >= 2.0
+            wick_ok = body > 0 and (upper_wick / body) >= wick_ratio_sh
             vol_ok = False
             if "volume" in df.columns and len(df) >= 20:
                 vol_avg = float(df["volume"].rolling(20).mean().iloc[-1])
-                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * 1.5
+                vol_ok = vol_avg > 0 and float(last["volume"]) > vol_avg * vol_mult_sh
             if not (wick_ok or vol_ok):
                 return {"found": False}
             return {

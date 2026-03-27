@@ -55,7 +55,14 @@
     "atr_period": 14,
     "atr_sl_multiplier": 2.0,
     "atr_tp_multiplier": 4.0,
+    "trailing_stop_atr_multiplier": 2.0,
     "min_confidence_score": 80.0,
+    "max_sl_pct": 0.03,
+    "max_exposure_pct": 0.03,
+    "forex_max_sl_pips": 80,
+    "stock_max_sl_pct": 0.03,
+    "swing_sl_buffer_pct": 0.0002,
+    "max_orders_per_symbol": 2,
     "spread_filter_multiplier": 3.0,
     "normal_spread_pips": {
       "EURUSD": 0.5,
@@ -175,11 +182,36 @@
   "smc": {
     "fvg_enabled": true,
     "fvg_confidence_bonus": 10,
+    "fvg_min_size_pct": 0.0002,
     "ob_enabled": true,
     "ob_confidence_bonus": 15,
     "ob_tolerance_pips": 5.0,
+    "ob_impulse_atr_multiplier": 1.5,
+    "level_dedup_threshold_pct": 0.0005,
     "smc_triple_confluence_enabled": true,
     "smc_triple_bonus": 20,
     "smc_double_bonus": 10
+  },
+  "volatility": {
+    "min_atr_ratio": 0.5,
+    "max_atr_ratio": 2.0,
+    "rsi_period": 14,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "bb_period": 20,
+    "bb_std_dev": 2.0,
+    "bb_squeeze_threshold": 0.01,
+    "compression_range_ratio": 0.6,
+    "expansion_atr_multiplier": 1.5
+  },
+  "entry": {
+    "wick_body_ratio_min": 2.0,
+    "volume_confirmation_multiplier": 1.5,
+    "pullback_max_fib": 0.618,
+    "stop_hunt_sweep_min_atr": 0.1,
+    "stop_hunt_sweep_max_atr": 0.5,
+    "bull_flag_confidence_bonus": 5,
+    "bear_flag_confidence_bonus": 5,
+    "triangle_confidence_bonus": 5
   }
 }

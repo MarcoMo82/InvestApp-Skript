@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 
 
+
 def detect_bull_flag(ohlcv: pd.DataFrame, lookback: int = 20) -> dict[str, Any]:
     """
     Erkennt ein bullisches Flag-Muster (Handbuch Kap. 5.1).
@@ -131,22 +132,31 @@ def detect_triangle(ohlcv: pd.DataFrame, lookback: int = 20) -> dict[str, Any]:
     return {"found": False, "pattern": None, "confidence_bonus": 0}
 
 
-def get_pattern_confidence_bonus(ohlcv: pd.DataFrame, direction: str) -> int:
+def get_pattern_confidence_bonus(ohlcv: pd.DataFrame, direction: str, config: Any = None) -> int:
     """
     Prüft alle Muster und gibt den höchsten Confidence-Bonus zurück.
     Wird im Entry-Agent optional eingebunden.
+
+    Args:
+        ohlcv: OHLCV DataFrame
+        direction: "long" oder "short"
+        config: optionales Config-Objekt für konfigurierbare Bonuswerte
     """
+    bull_bonus = getattr(config, "bull_flag_confidence_bonus", 5) if config is not None else 5
+    bear_bonus = getattr(config, "bear_flag_confidence_bonus", 5) if config is not None else 5
+    triangle_bonus = getattr(config, "triangle_confidence_bonus", 5) if config is not None else 5
+
     if direction == "long":
         result = detect_bull_flag(ohlcv)
         if result["found"]:
-            return int(result["confidence_bonus"])
+            return bull_bonus
     elif direction == "short":
         result = detect_bear_flag(ohlcv)
         if result["found"]:
-            return int(result["confidence_bonus"])
+            return bear_bonus
 
     result = detect_triangle(ohlcv)
     if result["found"]:
-        return int(result["confidence_bonus"])
+        return triangle_bonus
 
     return 0

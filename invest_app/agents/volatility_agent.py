@@ -31,8 +31,8 @@ class VolatilityAgent(BaseAgent):
     ) -> None:
         super().__init__("volatility_agent")
         self.atr_period = atr_period if config is None else getattr(config, "atr_period", atr_period)
-        self.min_atr_ratio = min_atr_ratio
-        self.max_atr_ratio = max_atr_ratio
+        self.min_atr_ratio = getattr(config, "min_atr_ratio", min_atr_ratio) if config is not None else min_atr_ratio
+        self.max_atr_ratio = getattr(config, "max_atr_ratio", max_atr_ratio) if config is not None else max_atr_ratio
         self.min_atr_pct = min_atr_pct
         self._config = config
         self._data_connector = data_connector
@@ -100,7 +100,7 @@ class VolatilityAgent(BaseAgent):
                     "atr_value": round(atr, 6), "atr_pct": round(atr_pct, 6),
                     "atr_ratio": round(atr_ratio, 4)}
 
-        # Session bestimmen
+        # Session bestimmen (verwendet Config-Werte falls verfügbar)
         session = self._get_current_session()
 
         # Marktphase erkennen
@@ -130,7 +130,7 @@ class VolatilityAgent(BaseAgent):
         # Bollinger Bands berechnen
         bb_upper, bb_mid, bb_lower, bb_bandwidth_series = self._calculate_bollinger_bands(df)
         bb_bandwidth = float(bb_bandwidth_series.iloc[-1]) if not bb_bandwidth_series.empty else 0.02
-        bb_status = self._get_bb_status(df, bb_upper, bb_lower, bb_bandwidth)
+        bb_status = self._get_bb_status(df, bb_upper, bb_lower, bb_bandwidth, self._config)
 
         # Confidence-Anpassungen durch RSI und BB
         confidence_modifier = 0.0
@@ -167,7 +167,9 @@ class VolatilityAgent(BaseAgent):
             "confidence_modifier": round(confidence_modifier, 2),
         }
 
-    def _calculate_rsi(self, ohlcv: pd.DataFrame, period: int = 14) -> pd.Series:
+    def _calculate_rsi(self, ohlcv: pd.DataFrame, period: int = 0) -> pd.Series:
+        if period == 0:
+            period = getattr(self._config, "rsi_period", 14) if self._config is not None else 14
         """Berechnet den RSI(14) für die Schlusskurse."""
         delta = ohlcv["close"].diff()
         gain = delta.clip(lower=0)
@@ -177,12 +179,13 @@ class VolatilityAgent(BaseAgent):
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    @staticmethod
-    def _get_rsi_status(rsi: float) -> str:
+    def _get_rsi_status(self, rsi: float) -> str:
         """Klassifiziert den RSI-Wert."""
-        if rsi > 70:
+        overbought = getattr(self._config, "rsi_overbought", 70) if self._config is not None else 70
+        oversold = getattr(self._config, "rsi_oversold", 30) if self._config is not None else 30
+        if rsi > overbought:
             return "overbought"
-        elif rsi < 30:
+        elif rsi < oversold:
             return "oversold"
         elif 40 <= rsi <= 60:
             return "neutral"
@@ -220,9 +223,13 @@ class VolatilityAgent(BaseAgent):
         return price_recent_high > price_prior_high and rsi_recent_high < rsi_prior_high
 
     def _calculate_bollinger_bands(
-        self, ohlcv: pd.DataFrame, period: int = 20, std_dev: float = 2.0
+        self, ohlcv: pd.DataFrame, period: int = 0, std_dev: float = 0.0
     ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
-        """Berechnet Bollinger Bands (20, 2.0)."""
+        """Berechnet Bollinger Bands (aus Config: bb_period, bb_std_dev)."""
+        if period == 0:
+            period = getattr(self._config, "bb_period", 20) if self._config is not None else 20
+        if std_dev == 0.0:
+            std_dev = getattr(self._config, "bb_std_dev", 2.0) if self._config is not None else 2.0
         mid = ohlcv["close"].rolling(period).mean()
         std = ohlcv["close"].rolling(period).std()
         upper = mid + std_dev * std
@@ -236,10 +243,13 @@ class VolatilityAgent(BaseAgent):
         bb_upper: pd.Series,
         bb_lower: pd.Series,
         bandwidth: float,
+        config: Any = None,
         squeeze_threshold: float = 0.01,
         walk_lookback: int = 3,
     ) -> str:
         """Bestimmt den Bollinger-Band-Status."""
+        if config is not None:
+            squeeze_threshold = getattr(config, "bb_squeeze_threshold", squeeze_threshold)
         if pd.isna(bandwidth) or bandwidth == 0:
             return "neutral"
 
@@ -304,8 +314,9 @@ class VolatilityAgent(BaseAgent):
         recent_avg = float(recent_ranges.mean())
         prior_avg = float(prior_ranges.mean())
 
-        # Compression wenn aktuelle Ranges < 60% der vorherigen
-        return recent_avg < prior_avg * 0.6 if prior_avg > 0 else False
+        # Compression wenn aktuelle Ranges < compression_range_ratio der vorherigen
+        ratio = getattr(self._config, "compression_range_ratio", 0.6) if self._config is not None else 0.6
+        return recent_avg < prior_avg * ratio if prior_avg > 0 else False
 
     def _detect_expansion(self, df: pd.DataFrame, current_atr: float, lookback: int = 50) -> bool:
         """
@@ -328,16 +339,21 @@ class VolatilityAgent(BaseAgent):
         if pd.isna(avg_atr_raw):
             return False
         avg_atr = float(avg_atr_raw)
-        return current_atr > avg_atr * 1.5 if avg_atr > 0 else False
+        multiplier = getattr(self._config, "expansion_atr_multiplier", 1.5) if self._config is not None else 1.5
+        return current_atr > avg_atr * multiplier if avg_atr > 0 else False
 
-    @staticmethod
-    def _get_current_session() -> str:
+    def _get_current_session(self) -> str:
         """Bestimmt die aktuelle Trading-Session basierend auf UTC-Zeit."""
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
 
-        in_london = 8 <= hour < 17
-        in_ny = 13 <= hour < 22
+        london_open = getattr(self._config, "london_open_hour", 8) if self._config is not None else 8
+        london_close = getattr(self._config, "london_close_hour", 17) if self._config is not None else 17
+        ny_open = getattr(self._config, "ny_open_hour", 13) if self._config is not None else 13
+        ny_close = getattr(self._config, "ny_close_hour", 22) if self._config is not None else 22
+
+        in_london = london_open <= hour < london_close
+        in_ny = ny_open <= hour < ny_close
 
         if in_london and in_ny:
             return "london_ny_overlap"
@@ -345,7 +361,7 @@ class VolatilityAgent(BaseAgent):
             return "london"
         elif in_ny:
             return "new_york"
-        elif 22 <= hour or hour < 8:
+        elif ny_close <= hour or hour < london_open:
             return "asia"
         else:
             return "off_hours"

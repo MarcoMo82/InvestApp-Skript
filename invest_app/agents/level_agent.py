@@ -19,9 +19,14 @@ class LevelAgent(BaseAgent):
     Berechnet Tageshoch/-tief, Support/Resistance und Fair Value Gaps.
     """
 
-    def __init__(self, fvg_min_size_pct: float = 0.0002) -> None:
+    def __init__(self, fvg_min_size_pct: float = 0.0002, config: Any = None) -> None:
         super().__init__("level_agent")
-        self.fvg_min_size_pct = fvg_min_size_pct  # Mindestgröße für FVGs
+        self._config = config
+        self.fvg_min_size_pct = (
+            getattr(config, "fvg_min_size_pct", fvg_min_size_pct)
+            if config is not None
+            else fvg_min_size_pct
+        )
 
     def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -100,8 +105,13 @@ class LevelAgent(BaseAgent):
                 "psych_strength": pl["strength"],
             })
 
-        # Duplikate entfernen (Level innerhalb 0.05% zusammenführen)
-        key_levels = self._deduplicate_levels(key_levels, current_price)
+        # Duplikate entfernen (Level innerhalb level_dedup_threshold_pct zusammenführen)
+        dedup_threshold = (
+            getattr(self._config, "level_dedup_threshold_pct", 0.0005)
+            if self._config is not None
+            else 0.0005
+        )
+        key_levels = self._deduplicate_levels(key_levels, current_price, dedup_threshold)
 
         # Nächstes Level und Distanz
         nearest = self._find_nearest_level(key_levels, current_price)
@@ -261,8 +271,13 @@ class LevelAgent(BaseAgent):
     def _find_order_blocks(self, ohlcv: pd.DataFrame, atr: float) -> list[dict]:
         """
         Findet Order Blocks: letzte Gegenrichtungskerze vor einem starken Impuls.
-        Starker Impuls = Body > ATR × 1.5 in Trendrichtung.
+        Starker Impuls = Body > ATR × ob_impulse_atr_multiplier in Trendrichtung.
         """
+        ob_impulse_mult = (
+            getattr(self._config, "ob_impulse_atr_multiplier", 1.5)
+            if self._config is not None
+            else 1.5
+        )
         order_blocks = []
         closes = ohlcv["close"].values
         opens = ohlcv["open"].values
@@ -271,7 +286,7 @@ class LevelAgent(BaseAgent):
 
         for i in range(1, len(ohlcv) - 1):
             body_size = abs(closes[i] - opens[i])
-            if body_size < atr * 1.5:
+            if body_size < atr * ob_impulse_mult:
                 continue
 
             # Starker Aufwärts-Impuls nach bearischer Kerze → bullischer OB

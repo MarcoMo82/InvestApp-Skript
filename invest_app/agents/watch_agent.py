@@ -17,7 +17,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_ORDERS_PER_SYMBOL = 2  # Maximale gleichzeitige Orders pro Symbol
+_DEFAULT_MAX_ORDERS_PER_SYMBOL = 2  # Fallback wenn Config fehlt
 
 
 class WatchAgent:
@@ -400,11 +400,16 @@ class WatchAgent:
             confidence = float(signal.get("confidence_score", signal.get("confidence", 0)))
 
             # ── Symbol-Limit prüfen ─────────────────────────────────────────
+            max_orders = (
+                getattr(self._config, "max_orders_per_symbol", _DEFAULT_MAX_ORDERS_PER_SYMBOL)
+                if self._config is not None
+                else _DEFAULT_MAX_ORDERS_PER_SYMBOL
+            )
             if self.order_db is not None:
                 count = self.order_db.get_order_count(symbol)
-                if count >= MAX_ORDERS_PER_SYMBOL:
+                if count >= max_orders:
                     logger.warning(
-                        f"[Watch-Agent] ❌ {symbol}: Max. {MAX_ORDERS_PER_SYMBOL} Orders erreicht "
+                        f"[Watch-Agent] ❌ {symbol}: Max. {max_orders} Orders erreicht "
                         f"({count} aktiv) – Signal verworfen"
                     )
                     return None
