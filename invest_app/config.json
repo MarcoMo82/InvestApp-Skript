@@ -49,10 +49,14 @@
   },
   "risk": {
     "risk_per_trade": 0.01,
+    "risk_per_trade_pct": 1.0,
     "max_daily_loss": 0.03,
+    "max_daily_drawdown_pct": 3.0,
     "drawdown_enabled": true,
     "max_open_positions": 3,
+    "max_open_trades": 3,
     "min_crv": 2.0,
+    "min_rr_ratio": 2.0,
     "atr_period": 14,
     "atr_sl_multiplier": 2.0,
     "atr_tp_multiplier": 4.0,
@@ -227,7 +231,33 @@
     "stop_hunt_sweep_max_atr": 0.5,
     "bull_flag_confidence_bonus": 5,
     "bear_flag_confidence_bonus": 5,
-    "triangle_confidence_bonus": 5
+    "triangle_confidence_bonus": 5,
+    "sl_atr_multiplier": 2.0,
+    "tp_rr_ratio": 2.0,
+    "signal_confidence_threshold": 0.65
+  },
+  "filters": {
+    "_comment": "MQL5 ConfigReader – ATR-Ratio, Spread und ADX Schwellenwerte für VolatilityFilter/TrendAnalysis",
+    "min_atr_multiplier": 0.5,
+    "max_atr_multiplier": 2.0,
+    "max_spread_pips": 2.0,
+    "adx_min_threshold": 20,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30
+  },
+  "trade_exit": {
+    "_comment": "MQL5 ConfigReader – Rollover-Management und TP-Einstellungen",
+    "use_fixed_tp": false,
+    "close_before_rollover_enabled": true,
+    "close_before_rollover_minutes": 30,
+    "close_only_if_profitable": false,
+    "rollover_time_utc": "22:00"
+  },
+  "session": {
+    "_comment": "MQL5 ConfigReader – Handelssessions (Singular-Key, Singular erwartet von ConfigReader.mqh)",
+    "trade_london": true,
+    "trade_new_york": true,
+    "trade_asian": false
   },
   "trade_management": {
     "_comment": "Breakeven + Trailing werden vollständig vom MQL5 EA verwaltet. Python liest nur Status.",

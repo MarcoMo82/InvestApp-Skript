@@ -91,6 +91,9 @@ int OnInit()
       }
    }
 
+   // Tages-Equity-Startwert setzen (für Daily-Drawdown-Schutz)
+   UpdateDailyEquityPeak();
+
    return INIT_SUCCEEDED;
 }
 

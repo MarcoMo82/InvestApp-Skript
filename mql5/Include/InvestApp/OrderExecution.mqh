@@ -139,15 +139,16 @@ OrderResult PlaceMarketOrder(string symbol, int direction, double lots,
    // --- OrderSend ausführen ---
    bool sent = OrderSend(request, result);
 
-   if(sent && result.retcode == TRADE_RETCODE_DONE)
+   if(sent && (result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_DONE_PARTIAL))
    {
       res.success      = true;
       res.ticket       = result.order;
       res.filled_price = result.price;
       res.filled_lots  = result.volume;
 
+      string fill_suffix = (result.retcode == TRADE_RETCODE_DONE_PARTIAL) ? " (Teilausführung)" : "";
       LOG_I("OrderExecution", symbol,
-            "Order platziert | Ticket=" + string(res.ticket) +
+            "Order platziert" + fill_suffix + " | Ticket=" + string(res.ticket) +
             " | " + (direction > 0 ? "BUY" : "SELL") +
             " " + DoubleToString(res.filled_lots, 2) +
             " @ " + DoubleToString(res.filled_price, digits) +
