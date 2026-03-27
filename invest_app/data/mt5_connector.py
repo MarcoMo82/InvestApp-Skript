@@ -262,6 +262,10 @@ class MT5Connector:
             "tp": signal.get("tp"),
             "comment": "InvestApp",
             "status": "pending",
+            # Trade-Management Parameter für EA
+            "atr_value": signal.get("atr_value"),
+            "breakeven_trigger_pips": signal.get("breakeven_trigger_pips"),
+            "trailing_atr_multiplier": signal.get("trailing_atr_multiplier"),
         }
         common_path = self._get_common_files_path()
         order_file = getattr(self.config, "mt5_order_file", "pending_order.json") if self.config else "pending_order.json"
@@ -563,6 +567,7 @@ class MT5Connector:
                 "symbol": p.symbol,
                 "direction": "buy" if p.type == 0 else "sell",
                 "type": "long" if p.type == 0 else "short",
+                "current_price": p.price_current,
                 "volume": p.volume,
                 "open_price": p.price_open,
                 "sl": p.sl,
@@ -573,6 +578,36 @@ class MT5Connector:
             }
             for p in positions
         ]
+
+    def get_deals_history(self, ticket: int, lookback_hours: int = 48) -> Optional[dict]:
+        """Gibt Exit-Deal-Details für ein bestimmtes Positions-Ticket zurück."""
+        if not self._connected:
+            return None
+        try:
+            from datetime import timedelta
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(hours=lookback_hours)
+            deals = mt5.history_deals_get(date_from, date_to)
+            if deals is None:
+                return None
+            for d in deals:
+                if d.position_id == ticket and d.entry == 1:  # DEAL_ENTRY_OUT = 1
+                    reason_map = {
+                        0: "UNKNOWN", 1: "MANUAL", 2: "MANUAL",
+                        3: "SL", 4: "TP", 5: "TRAILING",
+                    }
+                    return {
+                        "exit_price": d.price,
+                        "pnl_pips": None,  # wird von Python berechnet
+                        "profit": d.profit,
+                        "reason": reason_map.get(d.reason, "MANUAL"),
+                        "closed_at": datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat(),
+                        "volume": d.volume,
+                    }
+            return None
+        except Exception as e:
+            logger.warning(f"get_deals_history Fehler für Ticket {ticket}: {e}")
+            return None
 
     def get_closed_deals(self, from_timestamp: float) -> list[dict]:
         """Gibt abgeschlossene Deals seit from_timestamp zurück (nur EXIT-Deals)."""

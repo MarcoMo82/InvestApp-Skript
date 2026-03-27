@@ -228,5 +228,16 @@
     "bull_flag_confidence_bonus": 5,
     "bear_flag_confidence_bonus": 5,
     "triangle_confidence_bonus": 5
+  },
+  "trade_management": {
+    "_comment": "Breakeven + Trailing werden vollständig vom MQL5 EA verwaltet. Python liest nur Status.",
+    "breakeven_atr_multiplier": 1.0,
+    "trailing_atr_multiplier": 1.5,
+    "watch_poll_interval_seconds": 60
+  },
+  "learning_agent": {
+    "pattern_threshold": 10,
+    "confidence_adjustment_step": 5,
+    "max_confidence_threshold": 95
   }
 }

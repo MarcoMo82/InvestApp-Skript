@@ -25,6 +25,14 @@ _DEFAULT_MAX_ORDERS_PER_SYMBOL = 2  # Fallback wenn Config fehlt
 _PENDING_FILE_TICKET = -1  # Sentinel: Order via pending_order.json geschrieben, kein MT5-Ticket
 
 
+def _safe_float(val: Any) -> Optional[float]:
+    """Konvertiert beliebige Typen sicher zu float oder None."""
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 class WatchAgent:
     """
     Verwaltet freigegebene Signale und prüft Entry-Bedingungen auf dem 1m-Chart.
@@ -42,6 +50,7 @@ class WatchAgent:
         risk_agent: Optional[Any] = None,
         order_db: Optional[Any] = None,
         cycle_logger: Optional[Any] = None,
+        learning_agent: Optional[Any] = None,
     ) -> None:
         self.connector = connector
         self.trade_connector = trade_connector  # MT5Connector für Order-Execution (kein yfinance)
@@ -52,6 +61,7 @@ class WatchAgent:
         self.risk_agent = risk_agent
         self.order_db = order_db          # OrderDB-Instanz für persistentes Tracking
         self.cycle_logger = cycle_logger  # Wird vom Orchestrator gesetzt
+        self._learning_agent = learning_agent  # Learning Agent für Post-Trade-Analyse
         self._pending_signals: list[dict] = []
         self._lock = threading.Lock()
         self._last_sync_ts: float = 0.0   # Letzter MT5-Sync Timestamp
@@ -592,6 +602,14 @@ class WatchAgent:
                     lot_size=lot_size,
                     crv=float(signal.get("crv") or 0.0),
                     signal_id=signal_id,
+                    entry_type=signal.get("entry_type"),
+                    atr_value=_safe_float(signal.get("atr") or signal.get("atr_value")),
+                    atr_pct=_safe_float(signal.get("atr_pct")),
+                    rsi_value=_safe_float(signal.get("rsi_value")),
+                    rsi_zone=signal.get("rsi_zone"),
+                    volatility_phase=signal.get("volatility_phase"),
+                    macro_bias=signal.get("macro_bias"),
+                    trend_direction=signal.get("trend_direction") or direction,
                 )
 
             # ── Order senden (nur über MT5Connector) ────────────────────────
@@ -603,7 +621,8 @@ class WatchAgent:
                 else:
                     logger.warning("[Watch] %s | MT5 nicht erreichbar – schreibe pending_order.json direkt", symbol)
                     ticket = self._write_pending_order_direct(
-                        symbol, direction, lot_size, signal.get("entry_price"), stop_loss, take_profit
+                        symbol, direction, lot_size, signal.get("entry_price"), stop_loss, take_profit,
+                        signal=signal,
                     )
                     if ticket is not None:
                         return ticket
@@ -699,6 +718,7 @@ class WatchAgent:
         entry_price: Optional[float],
         sl: Optional[float],
         tp: Optional[float],
+        signal: Optional[dict] = None,
     ) -> Optional[int]:
         """Schreibt pending_order.json direkt – ohne MT5-Verbindung.
 
@@ -730,6 +750,23 @@ class WatchAgent:
             order_file = getattr(cfg, "mt5_order_file", "pending_order.json") if cfg else "pending_order.json"
             path = common_path / order_file
 
+            # ATR-Parameter für EA-Trade-Management aus Signal extrahieren
+            _sig = signal or {}
+            atr_val = _safe_float(_sig.get("atr") or _sig.get("atr_value"))
+            cfg = self._config
+            trailing_mult = (
+                getattr(cfg, "trailing_atr_multiplier",
+                        getattr(cfg, "trade_management", {}).get("trailing_atr_multiplier", 1.5))
+                if cfg else 1.5
+            )
+            be_mult = (
+                getattr(cfg, "breakeven_atr_multiplier",
+                        getattr(cfg, "trade_management", {}).get("breakeven_atr_multiplier", 1.0))
+                if cfg else 1.0
+            )
+            pip_size = 0.0001 if symbol not in ("USDJPY", "EURJPY", "GBPJPY") else 0.01
+            breakeven_pips = round(atr_val * be_mult / pip_size, 1) if atr_val else None
+
             order = {
                 "created_at": time.time(),
                 "timestamp": time.time(),
@@ -740,6 +777,10 @@ class WatchAgent:
                 "tp": tp,
                 "comment": "InvestApp",
                 "status": "pending",
+                # Trade-Management Parameter für den EA
+                "atr_value": atr_val,
+                "breakeven_trigger_pips": breakeven_pips,
+                "trailing_atr_multiplier": trailing_mult,
             }
             with open(path, "w") as f:
                 json.dump(order, f, indent=2)
@@ -752,10 +793,11 @@ class WatchAgent:
 
     def sync_positions_from_mt5(self) -> None:
         """
-        Synchronisiert offene MT5-Positionen mit der OrderDB.
-        - Neue MT5-Positionen → in DB eintragen
-        - DB-Orders ohne MT5-Position → als 'closed' markieren
-        Wird jede Minute aufgerufen.
+        Alle 60 Sekunden: offene MT5-Positionen lesen und DB aktualisieren.
+
+        Architektur: MT5 ist Trade-Eigentümer (Breakeven + Trailing via EA).
+        Python liest nur Status, schreibt in DB, triggert Learning Agent bei Close.
+        Kein aktives SL/TP-Management von Python-Seite.
         """
         if self.order_db is None:
             return
@@ -766,139 +808,204 @@ class WatchAgent:
             mt5_positions = self.connector.get_open_positions()
             mt5_tickets = {p["ticket"] for p in mt5_positions}
 
-            # Neue MT5-Positionen in DB eintragen
+            # ── Offene Positionen in DB aktualisieren ─────────────────────
             for pos in mt5_positions:
-                self.order_db.upsert_open_position(
-                    symbol=pos["symbol"],
-                    direction=pos.get("direction", "buy"),
-                    ticket=pos["ticket"],
-                    lot_size=pos.get("volume", 0),
-                    entry_price=pos.get("open_price", 0),
-                    sl=pos.get("sl", 0),
-                    tp=pos.get("tp", 0),
-                    profit=pos.get("profit", 0),
-                )
+                ticket = pos["ticket"]
+                current_price = pos.get("current_price", 0.0)
+                current_sl = pos.get("sl", 0.0)
+                direction_raw = pos.get("type", pos.get("direction", ""))
+                direction = "LONG" if direction_raw in ("long", "buy") else "SHORT"
 
-            # DB-Orders ohne MT5-Position → geschlossen
+                # Bestehenden Datensatz holen für max/min-Berechnung
+                existing = self.order_db.get_order_by_ticket(ticket)
+                if existing:
+                    max_p = existing.get("max_price_reached") or current_price
+                    min_p = existing.get("min_price_reached") or current_price
+                    if direction == "LONG":
+                        max_p = max(max_p, current_price)
+                    else:
+                        min_p = min(min_p, current_price)
+
+                    if hasattr(self.order_db, "update_trade_progress"):
+                        self.order_db.update_trade_progress(
+                            ticket=ticket,
+                            max_price=max_p,
+                            min_price=min_p,
+                            last_sl=current_sl,
+                            last_checked_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                else:
+                    # Neue MT5-Position in DB eintragen
+                    self.order_db.upsert_open_position(
+                        symbol=pos["symbol"],
+                        direction=pos.get("direction", "buy"),
+                        ticket=ticket,
+                        lot_size=pos.get("volume", 0),
+                        entry_price=pos.get("open_price", 0),
+                        sl=current_sl,
+                        tp=pos.get("tp", 0),
+                        profit=pos.get("profit", 0),
+                    )
+
+            # ── Geschlossene Trades erkennen ───────────────────────────────
             db_tickets = self.order_db.get_all_open_tickets()
             closed_tickets = db_tickets - mt5_tickets
 
-            if closed_tickets and hasattr(self.connector, "get_closed_deals"):
-                since = self._last_sync_ts or (datetime.now(timezone.utc).timestamp() - 3600)
-                deals = self.connector.get_closed_deals(since)
-                deals_by_ticket = {d["ticket"]: d for d in deals}
-
-                for ticket in closed_tickets:
-                    deal = deals_by_ticket.get(ticket)
-                    self.order_db.update_order_status(
-                        ticket=ticket,
-                        status="closed",
-                        close_price=deal["close_price"] if deal else None,
-                        pnl=deal["profit"] if deal else None,
-                        closed_at=deal["close_time"] if deal else None,
-                    )
-                    pnl_val = deal["profit"] if deal else None
-                    pnl_str = f"{pnl_val:+.2f}" if pnl_val is not None else "n/a"
-                    logger.info(
-                        f"[Watch-Agent] Position geschlossen: Ticket={ticket} PnL={pnl_str}"
-                    )
-
-                    # Order-Details aus DB holen für Logging
-                    order_info: dict = {}
-                    if hasattr(self.order_db, "get_order_by_ticket"):
-                        try:
-                            order_info = self.order_db.get_order_by_ticket(ticket) or {}
-                        except Exception:
-                            pass
-
-                    symbol = order_info.get("symbol", "")
-                    direction = order_info.get("direction", "")
-                    pnl_pips = float(pnl_val or 0.0)
-
-                    # Ergebnis-Klassifizierung
-                    if pnl_pips > 0:
-                        outcome = "win"
-                    elif pnl_pips < 0:
-                        outcome = "loss"
-                    else:
-                        outcome = "breakeven"
-
-                    # Verbose: Close-Event ausgeben
-                    if symbol:
-                        try:
-                            from utils.verbose_display import print_order_event
-                            print_order_event("close", symbol, {
-                                "direction": direction,
-                                "entry_price": float(order_info.get("entry_price") or 0.0),
-                                "sl": float(order_info.get("sl") or 0.0),
-                                "tp": float(order_info.get("tp") or 0.0),
-                                "crv": float(order_info.get("crv") or 0.0),
-                                "ticket": ticket,
-                                "pnl": pnl_pips,
-                            }, self._config)
-                        except Exception:
-                            pass
-
-                    # invest_app.db: geschlossenen Trade archivieren
-                    if self.db is not None and order_info:
-                        try:
-                            close_dt = None
-                            if deal and deal.get("close_time"):
-                                from datetime import timezone as _tz
-                                close_dt = datetime.fromtimestamp(
-                                    deal["close_time"], tz=_tz.utc
-                                )
-                            archive = {
-                                "id": order_info.get("id", str(uuid.uuid4())),
-                                "signal_id": order_info.get("signal_id") or order_info.get("id", ""),
-                                "mt5_ticket": ticket,
-                                "instrument": order_info.get("symbol", ""),
-                                "direction": order_info.get("direction", ""),
-                                "entry_price": order_info.get("entry_price", 0.0),
-                                "sl": order_info.get("sl", 0.0),
-                                "tp": order_info.get("tp", 0.0),
-                                "lot_size": order_info.get("lot_size", 0.0),
-                                "status": "closed",
-                                "close_price": deal["close_price"] if deal else None,
-                                "pnl": deal["profit"] if deal else None,
-                                "close_time": close_dt,
-                            }
-                            self.db.save_trade(archive)
-                        except Exception as _e:
-                            logger.warning(f"[Watch-Agent] invest_app.db Archivierung Fehler: {_e}")
-
-                    # Tages-Log: Trade-Ergebnis + Order-Close
-                    if self.cycle_logger is not None and symbol:
-                        try:
-                            self.cycle_logger.log_order(
-                                event="close",
-                                symbol=symbol,
-                                direction=str(direction),
-                                entry=float(order_info.get("entry_price") or 0.0),
-                                sl=float(order_info.get("sl") or 0.0),
-                                tp=float(order_info.get("tp") or 0.0),
-                                crv=float(order_info.get("crv") or 0.0),
-                                confidence=float(order_info.get("confidence") or 0.0),
-                                agent_params={"ticket": ticket, "pnl": pnl_pips},
-                            )
-                            self.cycle_logger.log_trade_result(
-                                symbol=symbol,
-                                direction=str(direction),
-                                pnl_pips=pnl_pips,
-                                outcome=outcome,
-                                agent_params=order_info,
-                            )
-                        except Exception as e:
-                            logger.warning(f"CycleLogger log_trade_result Fehler: {e}")
-
-            elif closed_tickets:
-                for ticket in closed_tickets:
-                    self.order_db.update_order_status(ticket=ticket, status="closed")
+            for ticket in closed_tickets:
+                self._handle_trade_closed(ticket)
 
             self._last_sync_ts = datetime.now(timezone.utc).timestamp()
 
         except Exception as e:
             logger.error(f"[Watch-Agent] sync_positions_from_mt5 Fehler: {e}")
+
+    def _handle_trade_closed(self, ticket: int) -> None:
+        """
+        Trade wurde von MT5 geschlossen – Details aus History holen und DB aktualisieren.
+        Kein SL/TP-Eingriff, nur Zustandsaufzeichnung und Learning-Trigger.
+        """
+        exit_price = None
+        pnl_pips = None
+        pnl_currency = None
+        exit_reason = "UNKNOWN"
+        closed_at = datetime.now(timezone.utc).isoformat()
+
+        # History aus MT5 holen (bevorzugt)
+        if hasattr(self.connector, "get_deals_history"):
+            try:
+                history = self.connector.get_deals_history(ticket)
+                if history:
+                    exit_price = history.get("exit_price")
+                    pnl_currency = history.get("profit")
+                    exit_reason = history.get("reason", "UNKNOWN")
+                    closed_at = history.get("closed_at") or closed_at
+            except Exception as e:
+                logger.warning(f"[Watch] get_deals_history Fehler für Ticket {ticket}: {e}")
+        elif hasattr(self.connector, "get_closed_deals"):
+            try:
+                since = self._last_sync_ts or (datetime.now(timezone.utc).timestamp() - 3600)
+                deals = self.connector.get_closed_deals(since)
+                for d in deals:
+                    if d.get("ticket") == ticket:
+                        exit_price = d.get("close_price")
+                        pnl_currency = d.get("profit")
+                        break
+            except Exception as e:
+                logger.warning(f"[Watch] get_closed_deals Fehler: {e}")
+
+        # Pips aus Währungsgewinn schätzen (Fallback)
+        if pnl_currency is not None:
+            order_info = self.order_db.get_order_by_ticket(ticket) or {}
+            entry = float(order_info.get("entry_price") or 0.0)
+            if exit_price and entry:
+                raw_dir = order_info.get("direction", "buy")
+                if raw_dir in ("buy", "long"):
+                    pnl_pips = round((exit_price - entry) / 0.0001, 1)
+                else:
+                    pnl_pips = round((entry - exit_price) / 0.0001, 1)
+
+        # DB aktualisieren
+        if hasattr(self.order_db, "mark_trade_closed"):
+            self.order_db.mark_trade_closed(
+                ticket=ticket,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl_pips=pnl_pips,
+                pnl_currency=pnl_currency,
+                closed_at=closed_at,
+            )
+        else:
+            self.order_db.update_order_status(
+                ticket=ticket,
+                status="closed",
+                close_price=exit_price,
+                pnl=pnl_currency,
+            )
+
+        pnl_str = f"{pnl_currency:+.2f}" if pnl_currency is not None else "n/a"
+        logger.info(
+            "[Watch] Trade geschlossen: Ticket=%s | Grund=%s | PnL=%s pips | PnL=%s",
+            ticket, exit_reason, pnl_pips, pnl_str,
+        )
+
+        # Tages-Log + Archivierung wie bisher
+        order_info = self.order_db.get_order_by_ticket(ticket) or {}
+        symbol = order_info.get("symbol", "")
+        direction = order_info.get("direction", "")
+        pnl_val = pnl_currency or 0.0
+
+        if symbol:
+            try:
+                from utils.verbose_display import print_order_event
+                print_order_event("close", symbol, {
+                    "direction": direction,
+                    "entry_price": float(order_info.get("entry_price") or 0.0),
+                    "sl": float(order_info.get("sl") or 0.0),
+                    "tp": float(order_info.get("tp") or 0.0),
+                    "crv": float(order_info.get("crv") or 0.0),
+                    "ticket": ticket,
+                    "pnl": pnl_val,
+                }, self._config)
+            except Exception:
+                pass
+
+        if self.db is not None and order_info:
+            try:
+                archive = {
+                    "id": order_info.get("id", str(uuid.uuid4())),
+                    "signal_id": order_info.get("signal_id") or order_info.get("id", ""),
+                    "mt5_ticket": ticket,
+                    "instrument": symbol,
+                    "direction": direction,
+                    "entry_price": order_info.get("entry_price", 0.0),
+                    "sl": order_info.get("sl", 0.0),
+                    "tp": order_info.get("tp", 0.0),
+                    "lot_size": order_info.get("lot_size", 0.0),
+                    "status": "closed",
+                    "close_price": exit_price,
+                    "pnl": pnl_currency,
+                    "close_time": None,
+                }
+                self.db.save_trade(archive)
+            except Exception as _e:
+                logger.warning(f"[Watch-Agent] invest_app.db Archivierung Fehler: {_e}")
+
+        if self.cycle_logger is not None and symbol:
+            outcome = "win" if pnl_val > 0 else ("loss" if pnl_val < 0 else "breakeven")
+            try:
+                self.cycle_logger.log_order(
+                    event="close",
+                    symbol=symbol,
+                    direction=str(direction),
+                    entry=float(order_info.get("entry_price") or 0.0),
+                    sl=float(order_info.get("sl") or 0.0),
+                    tp=float(order_info.get("tp") or 0.0),
+                    crv=float(order_info.get("crv") or 0.0),
+                    confidence=float(order_info.get("confidence") or 0.0),
+                    agent_params={"ticket": ticket, "pnl": pnl_val},
+                )
+                self.cycle_logger.log_trade_result(
+                    symbol=symbol,
+                    direction=str(direction),
+                    pnl_pips=pnl_pips or pnl_val,
+                    outcome=outcome,
+                    agent_params=order_info,
+                )
+            except Exception as e:
+                logger.warning(f"CycleLogger log_trade_result Fehler: {e}")
+
+        # Learning Agent triggern
+        self._trigger_learning_analysis(ticket)
+
+    def _trigger_learning_analysis(self, ticket: int) -> None:
+        """Triggert den Learning Agent für einen abgeschlossenen Trade."""
+        if not hasattr(self, "_learning_agent") or self._learning_agent is None:
+            return
+        try:
+            self._learning_agent.analyze_closed_trade(ticket)
+            self._learning_agent.check_and_apply_config_adjustments()
+        except Exception as e:
+            logger.warning(f"[Watch] Learning-Analyse für Ticket {ticket} fehlgeschlagen: {e}")
 
     def _execute_order(self, signal: dict) -> bool:
         """

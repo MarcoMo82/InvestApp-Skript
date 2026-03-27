@@ -30,6 +30,26 @@ input int      InpTimerSeconds          = 60;            // Aktualisierungsinter
 //--- Internes Prefix für alle InvestApp-Objekte
 #define IA_PREFIX "IA_"
 
+//+------------------------------------------------------------------+
+//|  Trade-Management: Breakeven + ATR-Trailing                      |
+//|  Der EA verwaltet SL autonom – Python liest nur Status.          |
+//+------------------------------------------------------------------+
+#define IA_MAX_TRADES 20
+
+struct TradeManagement
+{
+   ulong  ticket;
+   double entry_price;
+   double atr_value;
+   double breakeven_trigger;   // Preis ab dem Breakeven gesetzt wird (in Preis-Units)
+   double trailing_distance;   // Trailing-Abstand in Preis-Units (1.5 × ATR)
+   bool   breakeven_set;
+   ENUM_POSITION_TYPE direction;
+};
+
+TradeManagement g_trades[IA_MAX_TRADES];
+int             g_trade_count = 0;
+
 //--- Globale Zustandsvariablen
 string g_last_update        = "";
 int    g_active_count       = 0;
@@ -69,6 +89,7 @@ void OnTimer()
             FileIsExist("pending_order.json", FILE_COMMON) ? "JA" : "NEIN");
 
    CheckPendingOrder();
+   ManageTrades();
 
    if(g_timer_counter >= InpTimerSeconds)
    {
@@ -619,6 +640,150 @@ double NormalizeVolume(const string symbol, double volume)
 }
 
 //+------------------------------------------------------------------+
+//|  Trade-Management: Breakeven + ATR-Trailing (EA-autonom)        |
+//+------------------------------------------------------------------+
+
+// Hilfsfunktion: SL einer Position modifizieren
+bool ModifySL(ulong ticket, double new_sl)
+{
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+   req.action   = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   if(!PositionSelectByTicket(ticket)) return false;
+   req.symbol = PositionGetString(POSITION_SYMBOL);
+   req.sl     = NormalizeDouble(new_sl, (int)SymbolInfoInteger(req.symbol, SYMBOL_DIGITS));
+   req.tp     = PositionGetDouble(POSITION_TP);
+   bool ok = OrderSend(req, res);
+   if(!ok || res.retcode != TRADE_RETCODE_DONE)
+      Print("ModifySL Fehler Ticket=", ticket, " SL=", new_sl, " retcode=", res.retcode);
+   return ok && (res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_PLACED);
+}
+
+// Hilfsfunktion: TradeManagement-Eintrag für ein Ticket suchen (-1 wenn nicht gefunden)
+int FindTradeIndex(ulong ticket)
+{
+   for(int i = 0; i < g_trade_count; i++)
+      if(g_trades[i].ticket == ticket) return i;
+   return -1;
+}
+
+// Hilfsfunktion: Neuen TradeManagement-Eintrag anlegen
+void RegisterTrade(ulong ticket, double entry, double atr_val, double be_trigger_pips, double trailing_mult)
+{
+   if(g_trade_count >= IA_MAX_TRADES) return;
+   if(!PositionSelectByTicket(ticket)) return;
+
+   ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   double point  = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   int    digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+
+   // ATR als Preis-Units (aus pending_order.json direkt in Preis-Units)
+   double atr_price = atr_val;
+
+   // Breakeven-Trigger in Preis-Units (be_trigger_pips × Point × 10 für 5-digit-Broker)
+   double be_trigger_price = (be_trigger_pips > 0) ? (be_trigger_pips * point * 10) : atr_price;
+
+   // Trailing-Abstand = trailing_mult × ATR
+   double trailing_dist = trailing_mult * atr_price;
+
+   int idx = g_trade_count;
+   g_trades[idx].ticket           = ticket;
+   g_trades[idx].entry_price      = entry;
+   g_trades[idx].atr_value        = atr_price;
+   g_trades[idx].breakeven_trigger = be_trigger_price;
+   g_trades[idx].trailing_distance = trailing_dist;
+   g_trades[idx].breakeven_set    = false;
+   g_trades[idx].direction        = pos_type;
+   g_trade_count++;
+
+   Print("InvestApp TradeManagement registriert: Ticket=", ticket,
+         " Entry=", NormalizeDouble(entry, digits),
+         " BE-Trigger=", NormalizeDouble(be_trigger_price, digits),
+         " Trailing=", NormalizeDouble(trailing_dist, digits));
+}
+
+void ManageTrades()
+{
+   // Nicht mehr vorhandene Positionen aus Array entfernen
+   for(int i = g_trade_count - 1; i >= 0; i--)
+   {
+      if(!PositionSelectByTicket(g_trades[i].ticket))
+      {
+         // Position geschlossen → aus Array entfernen
+         for(int j = i; j < g_trade_count - 1; j++)
+            g_trades[j] = g_trades[j + 1];
+         g_trade_count--;
+      }
+   }
+
+   // Alle registrierten offenen Positionen verwalten
+   for(int i = 0; i < g_trade_count; i++)
+   {
+      ulong ticket = g_trades[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+
+      double current_price = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double current_sl    = PositionGetDouble(POSITION_SL);
+      double entry         = g_trades[i].entry_price;
+      ENUM_POSITION_TYPE pos_type = g_trades[i].direction;
+
+      // ── BREAKEVEN: Wenn Preis ≥ entry + breakeven_trigger ─────────
+      if(!g_trades[i].breakeven_set)
+      {
+         bool be_condition = false;
+         if(pos_type == POSITION_TYPE_BUY)
+            be_condition = (current_price >= entry + g_trades[i].breakeven_trigger);
+         else
+            be_condition = (current_price <= entry - g_trades[i].breakeven_trigger);
+
+         if(be_condition)
+         {
+            double be_price = NormalizeDouble(entry,
+               (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS));
+            // SL auf Entry setzen (Breakeven)
+            if((pos_type == POSITION_TYPE_BUY  && be_price > current_sl) ||
+               (pos_type == POSITION_TYPE_SELL && be_price < current_sl))
+            {
+               if(ModifySL(ticket, be_price))
+               {
+                  g_trades[i].breakeven_set = true;
+                  Print("InvestApp Breakeven gesetzt: Ticket=", ticket, " SL=", be_price);
+               }
+            }
+            else
+            {
+               // Bereits on Breakeven oder besser
+               g_trades[i].breakeven_set = true;
+            }
+         }
+      }
+      // ── ATR-TRAILING: Erst nach Breakeven ─────────────────────────
+      else
+      {
+         string sym   = PositionGetString(POSITION_SYMBOL);
+         int    digs  = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+         double new_sl;
+
+         if(pos_type == POSITION_TYPE_BUY)
+         {
+            new_sl = NormalizeDouble(current_price - g_trades[i].trailing_distance, digs);
+            // SL nur verbessern (niemals zurückziehen)
+            if(new_sl > current_sl)
+               ModifySL(ticket, new_sl);
+         }
+         else
+         {
+            new_sl = NormalizeDouble(current_price + g_trades[i].trailing_distance, digs);
+            if(new_sl < current_sl || current_sl == 0)
+               ModifySL(ticket, new_sl);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //|  Order-Polling: liest pending_order.json und führt Order aus     |
 //+------------------------------------------------------------------+
 void CheckPendingOrder()
@@ -741,10 +906,20 @@ void CheckPendingOrder()
    string new_status = success ? "executed" : "failed";
 
    if(success)
+   {
       Print("InvestApp Order ERFOLG: ", symbol, " ", direction,
             " Vol=", DoubleToString(volume,2), " Preis=", NormalizeDouble(price,digits),
             " SL=", NormalizeDouble(sl,digits), " TP=", NormalizeDouble(tp,digits),
             " Order=", result.order, " Deal=", result.deal);
+
+      // Trade-Management registrieren (Breakeven + ATR-Trailing)
+      double atr_val        = ParseJsonDouble(content, "atr_value");
+      double be_pips        = ParseJsonDouble(content, "breakeven_trigger_pips");
+      double trailing_mult  = ParseJsonDouble(content, "trailing_atr_multiplier");
+      if(trailing_mult <= 0) trailing_mult = 1.5;  // Default
+      if(atr_val > 0 && result.order > 0)
+         RegisterTrade((ulong)result.order, price, atr_val, be_pips, trailing_mult);
+   }
    else
       Print("InvestApp Order FEHLER: retcode=", result.retcode,
             " comment=", result.comment, " filling=", EnumToString(type_filling));

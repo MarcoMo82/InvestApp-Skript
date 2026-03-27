@@ -45,11 +45,15 @@ class LearningAgent(BaseAgent):
         output_dir: Optional[Path] = None,
         db: Any = None,
         config: Any = None,
+        order_db: Any = None,
+        config_path: Optional[Path] = None,
     ) -> None:
         super().__init__("learning_agent")
         self.output_dir = output_dir or Path("Output")
         self.db = db
         self._config = config
+        self.order_db = order_db          # OrderDB für Trade-Kontext (Post-Trade-Analyse)
+        self._config_path = config_path   # Pfad zur config.json für Auto-Anpassung
 
     def analyze(self, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """
@@ -632,6 +636,150 @@ class LearningAgent(BaseAgent):
                 if outcome == "breakeven":
                     return None
         return None
+
+    # ------------------------------------------------------------------
+    # Post-Trade Mini-Analyse (wird pro Trade nach Schließung aufgerufen)
+    # ------------------------------------------------------------------
+
+    def analyze_closed_trade(self, ticket: int) -> dict:
+        """
+        Analysiert einen abgeschlossenen Trade und gibt Erkenntnisse zurück.
+        Wird direkt nach Trade-Schließung vom Watch Agent aufgerufen.
+        """
+        if self.order_db is None:
+            return {}
+        trade = self.order_db.get_trade_context(ticket)
+        if not trade:
+            return {}
+
+        insights: dict = {}
+
+        # 1. War Confidence korrekt?
+        confidence = trade.get("confidence") or 0
+        won = (trade.get("pnl_pips") or trade.get("pnl") or 0) > 0
+        insights["confidence_accurate"] = won == (confidence >= 80)
+
+        # 2. ATR-Exkursion: Wieviel ATR lief der Trade in/gegen unsere Richtung?
+        atr = trade.get("atr_value") or 1.0
+        direction = (trade.get("trend_direction") or trade.get("direction") or "").upper()
+        entry = float(trade.get("entry_price") or 0)
+
+        if direction in ("LONG", "BUY"):
+            max_excursion = ((trade.get("max_price_reached") or entry) - entry) / atr
+            adverse_excursion = (entry - (trade.get("min_price_reached") or entry)) / atr
+        else:
+            max_excursion = (entry - (trade.get("min_price_reached") or entry)) / atr
+            adverse_excursion = ((trade.get("max_price_reached") or entry) - entry) / atr
+
+        insights["max_favorable_atr"] = round(max_excursion, 2)
+        insights["max_adverse_atr"] = round(adverse_excursion, 2)
+        insights["exit_reason"] = trade.get("exit_reason", "UNKNOWN")
+        insights["symbol"] = trade.get("symbol")
+        insights["won"] = won
+
+        # 3. Pattern-Key für Aggregation
+        pattern_key = (
+            f"{trade.get('symbol')}_{trade.get('entry_type')}"
+            f"_{trade.get('rsi_zone')}_{trade.get('volatility_phase')}"
+        )
+        insights["pattern_key"] = pattern_key
+
+        # In DB als analysiert markieren
+        try:
+            self.order_db.mark_learning_analyzed(ticket, insights)
+        except Exception as e:
+            self.logger.warning(f"mark_learning_analyzed Fehler: {e}")
+
+        self.logger.info(
+            "[Learning] Trade %s analysiert | Won=%s | MaxFav=%.2f ATR | MaxAdv=%.2f ATR | Grund=%s",
+            ticket, won, max_excursion, adverse_excursion, insights["exit_reason"],
+        )
+        return insights
+
+    def check_and_apply_config_adjustments(self) -> list[dict]:
+        """
+        Prüft ob ein Verlust-Muster ≥ 10× vorkommt und passt config.json an.
+        Liest alle unanalysierten Trades, sucht nach Mustern, erhöht Confidence-Schwelle.
+        """
+        if self.order_db is None:
+            return []
+
+        from collections import Counter
+
+        try:
+            unanalyzed = self.order_db.get_closed_unanalyzed_trades()
+        except Exception as e:
+            self.logger.warning(f"get_closed_unanalyzed_trades Fehler: {e}")
+            return []
+
+        # Verlust-Muster sammeln
+        loss_patterns: list[str] = []
+        for trade in unanalyzed:
+            pnl = trade.get("pnl_pips") or trade.get("pnl") or 0
+            if pnl < 0:
+                key = (
+                    f"{trade.get('symbol', '')}_{trade.get('entry_type', '')}"
+                    f"_{trade.get('rsi_zone', '')}"
+                )
+                loss_patterns.append(key)
+
+        pattern_counts = Counter(loss_patterns)
+        adjustments_made: list[dict] = []
+
+        cfg_threshold = (
+            self._config.get("pipeline", {}).get("confidence_threshold", 80)
+            if isinstance(self._config, dict)
+            else getattr(self._config, "confidence_threshold", 80)
+        )
+
+        for pattern, count in pattern_counts.items():
+            symbol = pattern.split("_")[0]
+            if count < 10 or not symbol:
+                continue
+
+            # Symbol-spezifische Schwelle bestimmen
+            sym_key = f"confidence_threshold_{symbol}"
+            current_threshold = (
+                self._config.get(sym_key, cfg_threshold)
+                if isinstance(self._config, dict)
+                else getattr(self._config, sym_key, cfg_threshold)
+            )
+            new_threshold = min(int(current_threshold) + 5, 95)
+
+            if new_threshold > current_threshold:
+                self._write_config_update(sym_key, new_threshold)
+                entry = {
+                    "pattern": pattern,
+                    "occurrences": count,
+                    "adjustment": f"{sym_key}: {current_threshold} → {new_threshold}",
+                }
+                adjustments_made.append(entry)
+                self.logger.info("[Learning] Config angepasst: %s", entry)
+
+        return adjustments_made
+
+    def _write_config_update(self, key: str, value: Any) -> None:
+        """Schreibt einen einzelnen Key in config.json (flach in pipeline-Sektion oder root)."""
+        if self._config_path is None:
+            return
+        try:
+            config_path = Path(self._config_path)
+            if not config_path.exists():
+                return
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+
+            # Versuche zuerst unter pipeline, dann root
+            if "pipeline" in raw and key.startswith("confidence_threshold"):
+                raw["pipeline"][key] = value
+            else:
+                raw[key] = value
+
+            config_path.write_text(
+                json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            self.logger.info("[Learning] config.json aktualisiert: %s = %s", key, value)
+        except Exception as e:
+            self.logger.warning(f"_write_config_update Fehler: {e}")
 
     def _persist(
         self,

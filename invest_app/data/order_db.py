@@ -37,19 +37,18 @@ class OrderDB:
             self._migrate_schema(conn)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS orders (
-                    id              TEXT    PRIMARY KEY,           -- UUID, intern generiert
-                    mt5_ticket      INTEGER UNIQUE,                -- MT5-Ticket nach Ausführung (nullable)
+                    id              TEXT    PRIMARY KEY,
+                    mt5_ticket      INTEGER UNIQUE,
                     symbol          TEXT    NOT NULL,
-                    direction       TEXT    NOT NULL,              -- 'buy' | 'sell'
+                    direction       TEXT    NOT NULL,
                     entry_price     REAL,
                     sl              REAL,
                     tp              REAL,
                     crv             REAL    DEFAULT 0,
                     confidence      REAL    DEFAULT 0,
                     lot_size        REAL,
-                    signal_id       TEXT,                          -- FK zu invest_app.db signals (nullable)
+                    signal_id       TEXT,
                     status          TEXT    DEFAULT 'pending',
-                    -- pending | open | closed | cancelled | failed
                     magic           INTEGER DEFAULT 20260324,
                     comment         TEXT    DEFAULT '',
                     created_at      REAL    NOT NULL,
@@ -57,7 +56,31 @@ class OrderDB:
                     opened_at       REAL,
                     closed_at       REAL,
                     close_price     REAL,
-                    pnl             REAL
+                    pnl             REAL,
+                    -- Trade-Kontext (beim Öffnen)
+                    macro_bias          TEXT,
+                    trend_direction     TEXT,
+                    atr_value           REAL,
+                    atr_pct             REAL,
+                    rsi_value           REAL,
+                    rsi_zone            TEXT,
+                    volatility_phase    TEXT,
+                    entry_type          TEXT,
+                    -- Trade-Verlauf (laufend aktualisiert)
+                    max_price_reached   REAL,
+                    min_price_reached   REAL,
+                    breakeven_set_at    TEXT,
+                    last_sl             REAL,
+                    last_checked_at     TEXT,
+                    -- Trade-Abschluss
+                    exit_price          REAL,
+                    exit_reason         TEXT,
+                    pnl_pips            REAL,
+                    pnl_currency        REAL,
+                    duration_seconds    INTEGER,
+                    -- Learning Agent
+                    learning_analyzed   INTEGER DEFAULT 0,
+                    learning_notes      TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
@@ -128,11 +151,36 @@ class OrderDB:
             """)
         else:
             # Nur fehlende Spalten ergänzen (ALTER TABLE)
-            for col, ddl in [
-                ("crv",       "ALTER TABLE orders ADD COLUMN crv REAL DEFAULT 0"),
-                ("signal_id", "ALTER TABLE orders ADD COLUMN signal_id TEXT"),
-                ("updated_at","ALTER TABLE orders ADD COLUMN updated_at REAL"),
-            ]:
+            new_cols = [
+                ("crv",               "ALTER TABLE orders ADD COLUMN crv REAL DEFAULT 0"),
+                ("signal_id",         "ALTER TABLE orders ADD COLUMN signal_id TEXT"),
+                ("updated_at",        "ALTER TABLE orders ADD COLUMN updated_at REAL"),
+                # Trade-Kontext (beim Öffnen)
+                ("macro_bias",        "ALTER TABLE orders ADD COLUMN macro_bias TEXT"),
+                ("trend_direction",   "ALTER TABLE orders ADD COLUMN trend_direction TEXT"),
+                ("atr_value",         "ALTER TABLE orders ADD COLUMN atr_value REAL"),
+                ("atr_pct",           "ALTER TABLE orders ADD COLUMN atr_pct REAL"),
+                ("rsi_value",         "ALTER TABLE orders ADD COLUMN rsi_value REAL"),
+                ("rsi_zone",          "ALTER TABLE orders ADD COLUMN rsi_zone TEXT"),
+                ("volatility_phase",  "ALTER TABLE orders ADD COLUMN volatility_phase TEXT"),
+                ("entry_type",        "ALTER TABLE orders ADD COLUMN entry_type TEXT"),
+                # Trade-Verlauf (laufend aktualisiert)
+                ("max_price_reached", "ALTER TABLE orders ADD COLUMN max_price_reached REAL"),
+                ("min_price_reached", "ALTER TABLE orders ADD COLUMN min_price_reached REAL"),
+                ("breakeven_set_at",  "ALTER TABLE orders ADD COLUMN breakeven_set_at TEXT"),
+                ("last_sl",           "ALTER TABLE orders ADD COLUMN last_sl REAL"),
+                ("last_checked_at",   "ALTER TABLE orders ADD COLUMN last_checked_at TEXT"),
+                # Trade-Abschluss
+                ("exit_price",        "ALTER TABLE orders ADD COLUMN exit_price REAL"),
+                ("exit_reason",       "ALTER TABLE orders ADD COLUMN exit_reason TEXT"),
+                ("pnl_pips",          "ALTER TABLE orders ADD COLUMN pnl_pips REAL"),
+                ("pnl_currency",      "ALTER TABLE orders ADD COLUMN pnl_currency REAL"),
+                ("duration_seconds",  "ALTER TABLE orders ADD COLUMN duration_seconds INTEGER"),
+                # Learning Agent
+                ("learning_analyzed", "ALTER TABLE orders ADD COLUMN learning_analyzed INTEGER DEFAULT 0"),
+                ("learning_notes",    "ALTER TABLE orders ADD COLUMN learning_notes TEXT"),
+            ]
+            for col, ddl in new_cols:
                 if col not in cols:
                     conn.execute(ddl)
 
@@ -162,6 +210,15 @@ class OrderDB:
         id: Optional[str] = None,
         crv: float = 0.0,
         signal_id: Optional[str] = None,
+        # Trade-Kontext (aus Signal/Agenten)
+        entry_type: Optional[str] = None,
+        atr_value: Optional[float] = None,
+        atr_pct: Optional[float] = None,
+        rsi_value: Optional[float] = None,
+        rsi_zone: Optional[str] = None,
+        volatility_phase: Optional[str] = None,
+        macro_bias: Optional[str] = None,
+        trend_direction: Optional[str] = None,
     ) -> str:
         """Neue Order anlegen. Generiert UUID automatisch wenn keine id übergeben wird.
 
@@ -175,11 +232,16 @@ class OrderDB:
                 """
                 INSERT INTO orders
                     (id, symbol, direction, entry_price, sl, tp, crv, confidence,
-                     lot_size, comment, signal_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                     lot_size, comment, signal_id, status, created_at, updated_at,
+                     entry_type, atr_value, atr_pct, rsi_value, rsi_zone,
+                     volatility_phase, macro_bias, trend_direction)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (order_id, symbol, direction, entry_price, sl, tp, crv, confidence,
-                 lot_size, comment, signal_id, now, now),
+                 lot_size, comment, signal_id, now, now,
+                 entry_type, atr_value, atr_pct, rsi_value, rsi_zone,
+                 volatility_phase, macro_bias, trend_direction),
             )
         return order_id
 
@@ -322,6 +384,10 @@ class OrderDB:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_open_tickets(self) -> list[int]:
+        """Alle MT5-Tickets mit Status open/pending (als Liste)."""
+        return list(self.get_all_open_tickets())
+
     def get_all_open_tickets(self) -> set[int]:
         """Alle MT5-Tickets mit Status open/pending."""
         with self._connect() as conn:
@@ -329,6 +395,104 @@ class OrderDB:
                 "SELECT mt5_ticket FROM orders WHERE status IN ('open','pending') AND mt5_ticket IS NOT NULL"
             ).fetchall()
             return {r[0] for r in rows}
+
+    # ------------------------------------------------------------------
+    # Trade-Begleitung (Polling + Learning)
+    # ------------------------------------------------------------------
+
+    def update_trade_progress(
+        self,
+        ticket: int,
+        max_price: float,
+        min_price: float,
+        last_sl: float,
+        last_checked_at: str,
+    ) -> None:
+        """Aktualisiert Höchst-/Tiefstkurs, letzten SL und Poll-Zeitstempel."""
+        now = datetime.now(timezone.utc).timestamp()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orders
+                SET max_price_reached=?, min_price_reached=?, last_sl=?,
+                    last_checked_at=?, updated_at=?
+                WHERE mt5_ticket=?
+                """,
+                (max_price, min_price, last_sl, last_checked_at, now, ticket),
+            )
+
+    def mark_trade_closed(
+        self,
+        ticket: int,
+        exit_price: Optional[float],
+        exit_reason: str,
+        pnl_pips: Optional[float],
+        pnl_currency: Optional[float],
+        closed_at: str,
+    ) -> None:
+        """Markiert einen Trade als geschlossen und setzt Exit-Felder."""
+        now = datetime.now(timezone.utc).timestamp()
+        # Laufzeit berechnen (opened_at → closed_at)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT opened_at FROM orders WHERE mt5_ticket=?", (ticket,)
+            ).fetchone()
+            opened_ts = row["opened_at"] if row else None
+
+        duration = None
+        try:
+            closed_ts = datetime.fromisoformat(closed_at).timestamp()
+            if opened_ts:
+                duration = int(closed_ts - opened_ts)
+        except Exception:
+            pass
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orders
+                SET status='closed', exit_price=?, exit_reason=?, pnl_pips=?,
+                    pnl_currency=?, duration_seconds=?, closed_at=?, updated_at=?
+                WHERE mt5_ticket=?
+                """,
+                (exit_price, exit_reason, pnl_pips, pnl_currency,
+                 duration, closed_at, now, ticket),
+            )
+
+    def get_closed_unanalyzed_trades(self) -> list[dict]:
+        """Alle geschlossenen Trades die noch nicht vom Learning Agent analysiert wurden."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE learning_analyzed=0 AND closed_at IS NOT NULL
+                      AND status='closed'
+                ORDER BY closed_at DESC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def mark_learning_analyzed(self, ticket: int, notes: dict) -> None:
+        """Markiert einen Trade als vom Learning Agent analysiert."""
+        import json as _json
+        now = datetime.now(timezone.utc).timestamp()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orders
+                SET learning_analyzed=1, learning_notes=?, updated_at=?
+                WHERE mt5_ticket=?
+                """,
+                (_json.dumps(notes, ensure_ascii=False), now, ticket),
+            )
+
+    def get_trade_context(self, ticket: int) -> Optional[dict]:
+        """Vollständiger Trade-Datensatz für den Learning Agent."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE mt5_ticket=?", (ticket,)
+            ).fetchone()
+            return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # Symbol-Persistenz
