@@ -110,6 +110,49 @@ def _trunc(text: str, width: int) -> str:
     return text[:width].ljust(width)
 
 
+def _format_score_line(sf: dict, trend_status: str = "", direction: str = "") -> str:
+    """Formatiert die Score-Faktoren als lesbare Zeile.
+
+    Beispiel: Score: ATR:1.4x ✓  RSI:42 ✓  Level ✓  Trend ▲
+    """
+    ok = "✓" if _UTF8 else "Y"
+    nok = "✗" if _UTF8 else "N"
+    parts: list[str] = []
+
+    # ATR
+    atr_ok = sf.get("atr_ok")
+    atr_ratio = sf.get("atr_ratio")
+    if atr_ok is not None:
+        mark = ok if atr_ok else nok
+        label = f"ATR:{atr_ratio:.1f}x {mark}" if atr_ratio is not None else f"ATR {mark}"
+        parts.append(label)
+
+    # RSI
+    rsi_val = sf.get("rsi_value")
+    rsi_ok = sf.get("rsi_ok")
+    if rsi_val is not None:
+        mark = ok if rsi_ok else nok
+        parts.append(f"RSI:{rsi_val:.0f} {mark}")
+
+    # Rundes Level
+    round_level = sf.get("round_level")
+    if round_level is not None:
+        parts.append(f"Level {ok if round_level else nok}")
+
+    # Trend (aus Signal, nicht aus Scanner)
+    if trend_status or direction:
+        parts.append(f"Trend {_trend_arrow(trend_status, direction)}")
+
+    # Spread
+    spread_ok = sf.get("spread_ok")
+    if spread_ok is not None:
+        parts.append(f"Spread {ok if spread_ok else nok}")
+
+    if not parts:
+        return ""
+    return "Score: " + "  ".join(parts)
+
+
 # ── Öffentliche Funktionen ───────────────────────────────────────────────────
 
 def print_separator() -> None:
@@ -194,12 +237,22 @@ def print_signal_table(
         trend_status = s.get("trend_status") or ""
         zone = _entry_zone(s)
 
+        agent_scores = s.get("agent_scores") or {}
+        scanner_factors = agent_scores.get("scanner") if isinstance(agent_scores, dict) else None
+
         # Zeile 1: Rang, Symbol, Richtung, Confidence
         l1 = f"#{rank} {inst:<10} {d:<5} {conf:.0f}%"
-        l2 = f"   Entry: {_p(entry, inst)}"
-        l3 = f"   Zone:  {zone}"
-        l4 = f"   SL: {_p(sl, inst)}  TP: {_p(tp, inst)}"
-        l5 = f"   Trend: {_trend_arrow(trend_status, d)}  CRV: {crv}"
+        # Zeile 2: Entry + Zone kombiniert
+        l2 = f"   Entry: {_p(entry, inst)}  Zone: {zone}"
+        # Zeile 3: Score-Faktoren (falls vorhanden) oder Fallback Trend
+        if scanner_factors:
+            score_text = _format_score_line(scanner_factors, trend_status, d)
+            l3 = f"   {score_text}" if score_text else f"   Trend: {_trend_arrow(trend_status, d)}"
+        else:
+            l3 = f"   Trend: {_trend_arrow(trend_status, d)}"
+        # Zeile 4: SL / TP / CRV
+        l4 = f"   SL: {_p(sl, inst)}  TP: {_p(tp, inst)}  CRV: {crv}"
+        l5 = ""
         return [l1, l2, l3, l4, l5]
 
     EMPTY = [""] * 5

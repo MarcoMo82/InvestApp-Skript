@@ -26,6 +26,7 @@ class ScannerAgent:
         self.symbol_provider = symbol_provider
         self.order_db = order_db
         self.active_symbols: list[str] = []
+        self.scored_breakdowns: dict[str, dict] = {}  # symbol → score_factors
         self.logger = logging.getLogger(__name__)
 
     def scan(self) -> list[str]:
@@ -42,6 +43,12 @@ class ScannerAgent:
         selected, cat_excluded = self._select_top_symbols(scored)
         top_n = getattr(self.config, "scanner_top_n", 5)
         self.active_symbols = selected[:top_n]
+
+        # Score-Faktoren pro Symbol speichern (für Terminal-Ausgabe)
+        self.scored_breakdowns = {
+            s: bd.get("score_factors", {})
+            for s, _score, bd in scored
+        }
         self.logger.info(
             f"[Scanner] {len(candidates)} gescannt, {len(scored)} gescort, "
             f"{len(self.active_symbols)} ausgewählt (top_n={top_n}), {cat_excluded} durch Kategorie-Limit aussortiert"
@@ -111,9 +118,11 @@ class ScannerAgent:
 
         Returns:
             (score, breakdown) – score als float, breakdown als Detail-Dict
+            breakdown["score_factors"] enthält semantische Werte für die Anzeige.
         """
         breakdown: dict = {}
         score = 0.0
+        score_factors: dict = {}
         try:
             import pandas as pd
 
@@ -144,13 +153,17 @@ class ScannerAgent:
             atr_ratio = atr / atr_avg
             if atr_ratio < 0.5 or atr_ratio > 2.0:
                 return 0.0, breakdown
-            if 0.7 <= atr_ratio <= 2.0:
+            atr_ok = 0.7 <= atr_ratio <= 2.0
+            if atr_ok:
                 score += 30
                 breakdown["atr"] = 30
+            score_factors["atr_ok"] = atr_ok
+            score_factors["atr_ratio"] = round(float(atr_ratio), 2)
 
             # EMA21-Abstand
             ema21 = closes.ewm(span=21).mean().iloc[-1]
             current = closes.iloc[-1]
+            ema_dist_pct = 0.0
             if current > 0:
                 ema_dist_pct = abs(current - ema21) / current * 100
                 if ema_dist_pct < 0.3:
@@ -162,38 +175,52 @@ class ScannerAgent:
                 elif ema_dist_pct < 1.5:
                     score += 5
                     breakdown["ema_dist"] = 5
+            score_factors["ema_dist_pct"] = round(ema_dist_pct, 2)
+            score_factors["ema_dist_ok"] = current > 0 and ema_dist_pct < 1.5
 
             # RSI(14)
             delta = closes.diff()
             gain = delta.where(delta > 0, 0.0).ewm(span=14).mean()
             loss = (-delta.where(delta < 0, 0.0)).ewm(span=14).mean()
             rs = gain / loss.replace(0, 1e-10)
-            rsi = (100 - 100 / (1 + rs)).iloc[-1]
-            if 35 <= rsi <= 65:
+            rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+            if 35 <= rsi_val <= 65:
                 score += 20
                 breakdown["rsi"] = 20
-            elif 25 <= rsi <= 75:
+                score_factors["rsi_zone"] = "neutral"
+                score_factors["rsi_ok"] = True
+            elif 25 <= rsi_val <= 75:
                 score += 10
                 breakdown["rsi"] = 10
+                score_factors["rsi_zone"] = "approach"
+                score_factors["rsi_ok"] = True
             else:
                 score -= 10
                 breakdown["rsi"] = -10
+                score_factors["rsi_zone"] = "extreme"
+                score_factors["rsi_ok"] = False
+            score_factors["rsi_value"] = round(rsi_val, 1)
 
             # Spread-Bonus (default OK, kein Tick-Abruf erforderlich)
             score += 15
             breakdown["spread"] = 15
+            score_factors["spread_ok"] = True
 
             # Rundes Level
             magnitude = 10 ** max(0, len(str(int(current))) - 1)
             nearest = round(current / magnitude) * magnitude
+            round_level_ok = False
             if atr > 0:
                 dist_atr = abs(current - nearest) / atr
                 if dist_atr < 1.0:
                     score += 10
                     breakdown["round_level"] = 10
+                    round_level_ok = True
                 elif dist_atr < 2.0:
                     score += 5
                     breakdown["round_level"] = 5
+                    round_level_ok = True
+            score_factors["round_level"] = round_level_ok
 
         except Exception as e:
             self.logger.warning(f"[Scanner] Score-Fehler {symbol}: {e}")
@@ -201,6 +228,7 @@ class ScannerAgent:
 
         result = max(0.0, score)
         breakdown["total"] = result
+        breakdown["score_factors"] = score_factors
         return result, breakdown
 
     def _select_top_symbols(

@@ -346,6 +346,21 @@ class Orchestrator:
             "risk": risk_result,
         })
 
+        # Scanner-Score-Faktoren anhängen (falls Scanner gelaufen ist)
+        agent_scores_dict: dict = {
+            "macro": macro_result,
+            "trend": trend_result,
+            "volatility": vol_result,
+            "level": level_result,
+            "entry": entry_result,
+            "risk": risk_result,
+            "validation": validation_result,
+        }
+        if self.scanner_agent is not None:
+            scanner_factors = getattr(self.scanner_agent, "scored_breakdowns", {}).get(symbol)
+            if scanner_factors:
+                agent_scores_dict["scanner"] = scanner_factors
+
         # Signal zusammenbauen
         signal = Signal(
             instrument=symbol,
@@ -361,15 +376,7 @@ class Orchestrator:
             reasoning=validation_result.get("summary", ""),
             pros=validation_result.get("pros", []),
             cons=validation_result.get("cons", []),
-            agent_scores={
-                "macro": macro_result,
-                "trend": trend_result,
-                "volatility": vol_result,
-                "level": level_result,
-                "entry": entry_result,
-                "risk": risk_result,
-                "validation": validation_result,
-            },
+            agent_scores=agent_scores_dict,
         )
 
         # P2.4: Session-Scoring – Confidence-Bonus vor Schwellwert-Prüfung
