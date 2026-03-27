@@ -33,6 +33,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from utils.json_utils import read_json_robust  # noqa: E402
+
 from utils.logger import get_logger  # noqa: E402
 from utils.mt5_paths import get_common_files_path  # noqa: E402
 
@@ -113,8 +115,7 @@ class LevelAgent:
             self.logger.error("[LevelAgent] market_data.json nicht gefunden: %s", path)
             return None
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = read_json_robust(path)
             self.logger.debug("[LevelAgent] market_data.json geladen: %s", path)
             return data
         except json.JSONDecodeError as exc:

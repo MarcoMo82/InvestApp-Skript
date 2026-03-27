@@ -305,7 +305,7 @@ void WriteMarketData(string &symbols[], int count, string path = "")
    json += "  }\n}\n";
 
    // In Common Files schreiben
-   int fh = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_COMMON);
+   int fh = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(fh == INVALID_HANDLE)
    {
       LOG_E("LevelDetection", "ALL",
