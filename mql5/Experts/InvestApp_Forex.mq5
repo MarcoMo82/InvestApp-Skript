@@ -109,6 +109,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   Print("[DEBUG] OnTimer fired | Symbol=", _Symbol, " Bid=", SymbolInfoDouble(_Symbol, SYMBOL_BID));
+
    datetime now = TimeCurrent();
 
    // Hauptanalyse – Throttling auf AnalysisIntervalSeconds
