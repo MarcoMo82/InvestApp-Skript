@@ -2,7 +2,9 @@
 .env
 
 # Python
+.venv/
 venv/
+env/
 __pycache__/
 *.pyc
 *.pyo
@@ -11,15 +13,25 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.eggs/
+
+# Test-Artefakte
+MagicMock/
+invest_app/MagicMock/
+.pytest_cache/
+htmlcov/
 
 # Logs & Datenbanken
+logs/
 *.log
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
-# Output (generierte Reports)
-Output/*.md
-Output/*.txt
+# Output (generierte Reports, nicht versionieren)
+Output/
+invest_app/Output/
 
 # macOS
 .DS_Store
@@ -36,6 +48,7 @@ desktop.ini
 
 # Claude Code
 .claude/
+.claire/
 
 # Test Coverage
 .coverage
