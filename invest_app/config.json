@@ -116,7 +116,7 @@
     "mt5_symbols_file": "available_symbols.json",
     "mt5_order_file": "pending_order.json",
     "mt5_result_file": "order_result.json",
-    "mt5_zones_file": "mt5_zones.json",
+    "mt5_zones_file": "C:/MT5/MQL5/Files/mt5_zones.json",
     "mt5_zones_export_enabled": true,
     "mt5_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
   },

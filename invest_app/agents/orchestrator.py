@@ -28,6 +28,7 @@ from utils.logger import get_logger
 from utils.database import Database
 from utils.correlation import has_correlated_open_position
 from utils.session import get_current_session, is_trend_trading_allowed, get_session_bonus
+from utils.zone_exporter import ZoneExporter
 
 if TYPE_CHECKING:
     from agents.watch_agent import WatchAgent
@@ -80,6 +81,7 @@ class Orchestrator:
         self.scanner_agent = scanner_agent
         self.active_symbols: list = list(getattr(config, "all_symbols", []))
         self.db = database
+        self.zone_exporter = ZoneExporter(config)
 
         self._scheduler: Optional[BackgroundScheduler] = None
         self._kill_switch = threading.Event()
@@ -155,6 +157,7 @@ class Orchestrator:
 
         all_signals: list[Signal] = []
 
+        forecast_count = 0
         for symbol in symbols:
             try:
                 signal = self._analyze_symbol(
@@ -165,13 +168,20 @@ class Orchestrator:
                 )
                 if signal:
                     all_signals.append(signal)
-                    self.db.save_signal(signal)
+                    # Forecast-Zonen (PENDING) nicht in DB speichern
+                    if signal.status != SignalStatus.PENDING:
+                        self.db.save_signal(signal)
+                    if signal.zone_status == "forecast_zone":
+                        forecast_count += 1
                     if self.chart_exporter is not None:
                         self.chart_exporter.export_zones(
                             symbol, signal.agent_scores or {}, signal
                         )
             except Exception as e:
                 logger.error(f"Fehler bei {symbol}: {e}", exc_info=True)
+
+        if forecast_count > 0:
+            logger.info(f"Forecast-Zonen erkannt: {forecast_count}")
 
         # Chart-Export speichern
         if self.chart_exporter is not None:
@@ -180,9 +190,23 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"ChartExporter Fehler: {e}")
 
+        # Aktive Trades aus DB für Display holen
+        active_trade_dicts = self._get_active_trade_dicts()
+
+        # Zone-Export (neues Format)
+        try:
+            display_dicts = [s.model_dump(mode="json") for s in all_signals]
+            self.zone_exporter.export(display_dicts + active_trade_dicts)
+        except Exception as e:
+            logger.warning(f"ZoneExporter Fehler: {e}")
+
         # Reporting
-        if all_signals:
-            self.reporting_agent.run({"signals": all_signals, "cycle_id": cycle_id})
+        if all_signals or active_trade_dicts:
+            self.reporting_agent.run({
+                "signals": all_signals,
+                "cycle_id": cycle_id,
+                "active_trade_dicts": active_trade_dicts,
+            })
 
         # Learning (nicht-blockierend, nach Reporting)
         if self.learning_agent is not None:
@@ -192,15 +216,19 @@ class Orchestrator:
                 logger.warning(f"LearningAgent Fehler: {e}")
 
         approved = [s for s in all_signals if s.status == SignalStatus.APPROVED]
+        signal_ready = [s for s in approved if s.zone_status == "signal_ready"]
+
+        if signal_ready:
+            logger.info(f"Signale freigegeben: {len(signal_ready)}")
 
         # Signale weiterleiten: Watch-Agent übernimmt Ausführung (kein doppelter place_order)
         trading_mode = getattr(self.config, "trading_mode", "analysis")
-        for signal in approved:
+        for signal in signal_ready:
             instrument = signal.instrument
             signal_dict = signal.model_dump(mode="json")
             if self.watch_agent is not None:
                 self.watch_agent.add_pending_signal(signal_dict)
-                logger.info(f"Signal an Watch-Agent übergeben: {instrument}")
+                logger.info(f"Signal freigegeben → Watch-Agent: {instrument}")
             elif trading_mode in ("demo", "live"):
                 # Fallback: direkter Market-Entry (nur in demo/live Modus)
                 self._place_and_save_order(signal)
@@ -296,6 +324,16 @@ class Orchestrator:
             "current_price": current_price,
         })
 
+        # Forecast-Zone Check: Kurs innerhalb 2 ATR der nächsten Zone?
+        atr_value_for_zone = vol_result.get("atr_value", 0.0)
+        nearest_level = level_result.get("nearest_level")
+        is_near_zone = False
+        atr_distance: float = 0.0
+        if nearest_level and atr_value_for_zone > 0:
+            distance_to_zone = abs(nearest_level.get("price", 0.0) - current_price)
+            atr_distance = distance_to_zone / atr_value_for_zone
+            is_near_zone = atr_distance <= 2.0
+
         # 5. Entry-Analyse (P1.3: aktuellen Spread übergeben)
         spread_pips = 0.0
         if hasattr(self.connector, "get_current_spread_pips"):
@@ -314,6 +352,15 @@ class Orchestrator:
         })
 
         if not entry_result.get("entry_found", False):
+            if is_near_zone:
+                logger.debug(
+                    f"{symbol}: Forecast-Zone erkannt – kein Entry-Setup "
+                    f"(Distanz: {atr_distance:.2f} ATR)"
+                )
+                return self._build_forecast_zone_signal(
+                    symbol, direction, macro_result, trend_result, vol_result,
+                    level_result, atr_distance,
+                )
             logger.debug(f"{symbol}: Kein Entry-Setup")
             return None
 
@@ -415,10 +462,12 @@ class Orchestrator:
         min_score = float(getattr(self.config, "min_confidence_score", 80.0))
         if validation_result.get("validated", False) and signal.confidence_score >= min_score:
             signal.status = SignalStatus.APPROVED
-            logger.info(f"✅ Signal FREIGEGEBEN: {signal.summary()}")
+            signal.zone_status = "signal_ready"
+            signal.entry_trigger_hint = self._build_entry_trigger_hint(entry_result, signal)
+            logger.info(f"✅ Signal freigegeben: {signal.summary()}")
         else:
             signal.status = SignalStatus.REJECTED
-            logger.debug(f"❌ Signal VERWORFEN: {signal.summary()}")
+            logger.debug(f"❌ Signal verworfen: {signal.summary()}")
 
         return signal
 
@@ -494,8 +543,8 @@ class Orchestrator:
                 self.scanner_agent.log_watchlist(previous if previous else None)
                 top_str = ", ".join(self.active_symbols[:5])
                 logger.info(
-                    f"[Scanner] {len(self.active_symbols)} ausgewählt: {top_str}"
-                    + (" ..." if len(self.active_symbols) > 5 else "")
+                    f"[Scanner] Symbole ausgewählt: {len(self.active_symbols)} ({top_str}"
+                    + (" ...)" if len(self.active_symbols) > 5 else ")")
                 )
             else:
                 self.active_symbols = list(getattr(self.config, "all_symbols", []))
@@ -541,6 +590,99 @@ class Orchestrator:
                 logger.warning(f"Fallback-Order fehlgeschlagen für {signal.instrument}")
         except Exception as e:
             logger.error(f"Fallback-Order Fehler für {signal.instrument}: {e}")
+
+    def _build_forecast_zone_signal(
+        self,
+        symbol: str,
+        direction: str,
+        macro: dict,
+        trend: dict,
+        vol: dict,
+        level: dict,
+        atr_distance: float,
+    ) -> Signal:
+        """Erstellt ein PENDING-Signal für eine erkannte Forecast-Zone."""
+        nearest = level.get("nearest_level") or {}
+        atr = float(vol.get("atr_value") or 0.0)
+        zone_price = float(nearest.get("price") or 0.0)
+
+        # Zonengrenzen aus Level-Typ ableiten
+        zone_low = float(
+            nearest.get("ob_low") or nearest.get("fvg_low") or (zone_price - atr * 0.5)
+        )
+        zone_high = float(
+            nearest.get("ob_high") or nearest.get("fvg_high") or (zone_price + atr * 0.5)
+        )
+
+        agent_scores: dict = {
+            "macro": macro,
+            "trend": trend,
+            "volatility": vol,
+            "level": level,
+            "_zone_low": zone_low,
+            "_zone_high": zone_high,
+            "_atr_distance": round(atr_distance, 2),
+        }
+
+        return Signal(
+            instrument=symbol,
+            direction=Direction(direction),
+            trend_status=trend.get("structure_status", ""),
+            macro_status=f"{macro.get('macro_bias', 'neutral')} | risk: {macro.get('event_risk', 'medium')}",
+            confidence_score=0.0,
+            status=SignalStatus.PENDING,
+            zone_status="forecast_zone",
+            entry_trigger_hint="Kurs nähert sich Zone – kein Entry-Setup",
+            agent_scores=agent_scores,
+        )
+
+    def _build_entry_trigger_hint(self, entry_result: dict, signal: Signal) -> str:
+        """Erstellt einen lesbaren Hinweis worauf beim Entry gewartet wird."""
+        entry_type = entry_result.get("entry_type", "")
+        price = signal.entry_price
+        inst = signal.instrument
+
+        # Preisformatierung – JPY 3 Dezimalstellen, Gold 2, sonst 5
+        if "JPY" in inst.upper():
+            price_str = f"{price:.3f}"
+        elif any(x in inst.upper() for x in ("XAU", "XAG", "GOLD")):
+            price_str = f"{price:.2f}"
+        elif price >= 1000:
+            price_str = f"{price:.2f}"
+        else:
+            price_str = f"{price:.5f}"
+
+        hints = {
+            "rejection": f"Warte auf Rejection-Wick bei {price_str}",
+            "pullback": "Warte auf Pullback zu EMA21",
+            "breakout": f"Warte auf Breakout-Retest bei {price_str}",
+            "market": "Market-Order bereit",
+        }
+        return hints.get(entry_type, f"Warte auf Entry-Trigger bei {price_str}")
+
+    def _get_active_trade_dicts(self) -> list[dict]:
+        """Liest offene DB-Trades und konvertiert sie zu Display-Dicts."""
+        try:
+            open_trades = self.db.get_open_trades()
+            result = []
+            for trade in open_trades:
+                result.append({
+                    "instrument": trade.get("instrument", ""),
+                    "direction": trade.get("direction", ""),
+                    "entry_price": float(trade.get("entry_price") or 0.0),
+                    "stop_loss": float(trade.get("sl") or 0.0),
+                    "take_profit": float(trade.get("tp") or 0.0),
+                    "lot_size": float(trade.get("lot_size") or 0.0),
+                    "confidence_score": 0.0,
+                    "crv": 0.0,
+                    "timestamp": str(trade.get("open_time") or ""),
+                    "zone_status": "active_trade",
+                    "mt5_ticket": trade.get("mt5_ticket"),
+                })
+            return result
+        except Exception as e:
+            logger.debug(f"_get_active_trade_dicts Fehler: {e}")
+            return []
 
     def _check_daily_drawdown(self) -> bool:
         """

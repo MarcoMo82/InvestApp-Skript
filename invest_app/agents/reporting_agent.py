@@ -38,23 +38,35 @@ class ReportingAgent(BaseAgent):
         signals: list[Signal] = self._require_field(data, "signals")
         cycle_id = data.get("cycle_id", datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
 
+        active_trade_dicts: list[dict] = data.get("active_trade_dicts", [])
+
         # Signale ranken und filtern
         approved = [s for s in signals if s.status == SignalStatus.APPROVED]
         top_signals = sorted(approved, key=lambda s: s.confidence_score, reverse=True)
 
-        # Report generieren
+        # Forecast-Zonen (PENDING, zone_status="forecast_zone")
+        forecast_zones = [
+            s for s in signals
+            if s.status == SignalStatus.PENDING and s.zone_status == "forecast_zone"
+        ]
+
+        # Report generieren (nur freigegebene Signale)
         report_content = self._generate_markdown_report(top_signals, cycle_id)
         report_path = self._save_report(report_content, cycle_id)
 
         self.logger.info(
             f"Report erstellt: {report_path} | "
-            f"Signale gesamt: {len(signals)} | Freigegeben: {len(top_signals)}"
+            f"Signale gesamt: {len(signals)} | "
+            f"Freigegeben: {len(top_signals)} | "
+            f"Forecast-Zonen: {len(forecast_zones)} | "
+            f"Laufende Trades: {len(active_trade_dicts)}"
         )
 
         # Terminal-Ausgabe: Top-10-Tabelle
         macro_info: dict = {"cycle_id": cycle_id}
-        if top_signals:
-            agent_scores = top_signals[0].agent_scores or {}
+        ref_signal = top_signals[0] if top_signals else (forecast_zones[0] if forecast_zones else None)
+        if ref_signal:
+            agent_scores = ref_signal.agent_scores or {}
             macro_data = agent_scores.get("macro") or {}
             if isinstance(macro_data, dict):
                 macro_info["macro_bias"] = macro_data.get("macro_bias", "neutral")
@@ -62,9 +74,17 @@ class ReportingAgent(BaseAgent):
             if isinstance(vol_data, dict):
                 macro_info["volatility_ok"] = vol_data.get("setup_allowed", True)
 
+        # Anzeigeliste: active_trade → signal_ready → forecast_zone
+        display_list: list[dict] = (
+            active_trade_dicts
+            + [s.model_dump(mode="json") for s in top_signals]
+            + [s.model_dump(mode="json") for s in forecast_zones]
+        )
+
         secondary = [
             s for s in signals
-            if s.status.value != "approved" and s.confidence_score > 0
+            if s.status not in (SignalStatus.APPROVED, SignalStatus.PENDING)
+            and s.confidence_score > 0
         ]
         try:
             session = get_current_session()
@@ -72,7 +92,7 @@ class ReportingAgent(BaseAgent):
             session = "N/A"
 
         print_signal_table(
-            [s.model_dump(mode="json") for s in top_signals],
+            display_list,
             macro_info=macro_info,
             session=session,
             secondary_signals=[s.model_dump(mode="json") for s in secondary],
@@ -83,6 +103,8 @@ class ReportingAgent(BaseAgent):
             "report_path": str(report_path),
             "signal_count": len(signals),
             "approved_count": len(top_signals),
+            "forecast_zone_count": len(forecast_zones),
+            "active_trade_count": len(active_trade_dicts),
             "cycle_id": cycle_id,
         }
 

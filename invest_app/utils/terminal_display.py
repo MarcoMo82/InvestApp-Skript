@@ -204,7 +204,7 @@ def print_signal_table(
 
     icon = "📊 " if _UTF8 else ""
     print(_SEP)
-    print(f"{_IND}{icon}SIGNAL-REPORT  |  {now}{cycle_nr_str}")
+    print(f"{_IND}{icon}FORECAST-ZONEN & SIGNALE  |  {now}{cycle_nr_str}")
     print(_SEP)
 
     macro_bias = str(macro_info.get("macro_bias", "N/A")).upper()
@@ -219,14 +219,15 @@ def print_signal_table(
         return
 
     top10 = signals[:10]
-    print(f"{_IND}TOP 10 SYMBOLE")
+    icon_header = "📊 " if _UTF8 else ""
+    print(f"{_IND}{icon_header}TOP 10 FORECAST-ZONEN & SIGNALE")
     print(_THIN)
 
     # Box-Ränder
     col_border = "─" * _COL_W
     print(f"{_IND}┌{col_border}┬{col_border}┐")
 
-    def _cell_lines(rank: int, s: dict) -> list[str]:
+    def _cell_lines(rank: int, s: dict) -> list[str]:  # noqa: C901
         inst = s.get("instrument", "???")
         d = _direction_str(s.get("direction", ""))
         conf = float(s.get("confidence_score") or 0)
@@ -235,25 +236,61 @@ def print_signal_table(
         tp = float(s.get("take_profit") or 0.0)
         crv = s.get("crv") or 0.0
         trend_status = s.get("trend_status") or ""
-        zone = _entry_zone(s)
-
+        zone_status = s.get("zone_status") or ""
+        trigger_hint = s.get("entry_trigger_hint") or ""
         agent_scores = s.get("agent_scores") or {}
-        scanner_factors = agent_scores.get("scanner") if isinstance(agent_scores, dict) else None
 
-        # Zeile 1: Rang, Symbol, Richtung, Confidence
+        # ── Laufender Trade ──────────────────────────────────────────
+        if zone_status == "active_trade":
+            icon = "🔵 " if _UTF8 else "[T] "
+            l1 = f"{icon}#{rank} {inst:<10} {d:<5} Laufender Trade"
+            l2 = f"   Entry: {_p(entry, inst)}  SL: {_p(sl, inst)}  TP: {_p(tp, inst)}"
+            l3 = f"   seit: {_since(s.get('timestamp'))}"
+            return [l1, l2, l3, "", ""]
+
+        # ── Signal bereit ─────────────────────────────────────────────
+        if zone_status == "signal_ready":
+            icon = "🟢 " if _UTF8 else "[S] "
+            l1 = f"{icon}#{rank} {inst:<10} {d:<5} Signal bereit  {conf:.0f}%"
+            l2 = f"   Entry: {_p(entry, inst)}  SL: {_p(sl, inst)}  TP: {_p(tp, inst)}  CRV: {crv}"
+            l3 = f"   Warte auf: {trigger_hint}" if trigger_hint else f"   Trend: {_trend_arrow(trend_status, d)}"
+            return [l1, l2, l3, "", ""]
+
+        # ── Forecast-Zone ─────────────────────────────────────────────
+        if zone_status == "forecast_zone":
+            icon = "🟡 " if _UTF8 else "[Z] "
+            l1 = f"{icon}#{rank} {inst:<10} {d:<5} Forecast-Zone"
+
+            # Zonengrenzen aus agent_scores
+            zone_low = float((agent_scores.get("_zone_low") or 0.0))
+            zone_high = float((agent_scores.get("_zone_high") or 0.0))
+            atr_dist = float((agent_scores.get("_atr_distance") or 0.0))
+            if zone_low > 0 and zone_high > 0:
+                zone_str = f"{_p(zone_low, inst)}-{_p(zone_high, inst)}"
+            else:
+                zone_str = _entry_zone(s)
+            l2 = f"   Zone: {zone_str}  |  Distanz: {atr_dist:.1f} ATR"
+
+            scanner_factors = agent_scores.get("scanner") if isinstance(agent_scores, dict) else None
+            if scanner_factors:
+                score_text = _format_score_line(scanner_factors, trend_status, d)
+                l3 = f"   {score_text}" if score_text else f"   Trend: {_trend_arrow(trend_status, d)}"
+            else:
+                l3 = f"   Trend: {_trend_arrow(trend_status, d)}"
+            return [l1, l2, l3, "", ""]
+
+        # ── Fallback: altes Format ohne zone_status ───────────────────
+        scanner_factors = agent_scores.get("scanner") if isinstance(agent_scores, dict) else None
+        zone = _entry_zone(s)
         l1 = f"#{rank} {inst:<10} {d:<5} {conf:.0f}%"
-        # Zeile 2: Entry + Zone kombiniert
         l2 = f"   Entry: {_p(entry, inst)}  Zone: {zone}"
-        # Zeile 3: Score-Faktoren (falls vorhanden) oder Fallback Trend
         if scanner_factors:
             score_text = _format_score_line(scanner_factors, trend_status, d)
             l3 = f"   {score_text}" if score_text else f"   Trend: {_trend_arrow(trend_status, d)}"
         else:
             l3 = f"   Trend: {_trend_arrow(trend_status, d)}"
-        # Zeile 4: SL / TP / CRV
         l4 = f"   SL: {_p(sl, inst)}  TP: {_p(tp, inst)}  CRV: {crv}"
-        l5 = ""
-        return [l1, l2, l3, l4, l5]
+        return [l1, l2, l3, l4, ""]
 
     EMPTY = [""] * 5
 

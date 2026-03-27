@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -60,6 +60,16 @@ class Signal(BaseModel):
     reasoning: str = Field(default="", description="Zusammenfassung der Signal-Logik")
     pros: list[str] = Field(default_factory=list)
     cons: list[str] = Field(default_factory=list)
+
+    # Zonen-Status und Entry-Hinweis
+    zone_status: Optional[str] = Field(
+        default=None,
+        description="forecast_zone / signal_ready / active_trade",
+    )
+    entry_trigger_hint: str = Field(
+        default="",
+        description="Worauf gewartet wird, z.B. 'Warte auf Rejection-Wick bei 1.0840'",
+    )
 
     # Einzelbewertungen der Agenten
     agent_scores: dict[str, Any] = Field(
