@@ -15,6 +15,20 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Bekannte Forex-Währungscodes (ISO 4217) für automatische Erkennung
+_FOREX_CURRENCIES: frozenset[str] = frozenset({
+    "EUR", "USD", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD",
+    "SEK", "NOK", "DKK", "SGD", "HKD", "MXN", "ZAR", "TRY",
+    "PLN", "CZK", "HUF", "RON", "BGN", "RUB", "CNY",
+    "THB", "IDR", "INR", "KRW", "BRL",
+})
+
+# Bekannte Krypto-Basiswährungen für automatische Erkennung
+_CRYPTO_BASES: frozenset[str] = frozenset({
+    "BTC", "ETH", "XRP", "LTC", "BCH", "ADA", "DOT", "SOL",
+    "DOGE", "AVAX", "LINK", "MATIC", "UNI", "ATOM", "ALGO",
+})
+
 # Mapping: MT5-Symbol → yfinance-Ticker
 SYMBOL_MAP: dict[str, str] = {
     "EURUSD": "EURUSD=X",
@@ -205,6 +219,40 @@ class YFinanceConnector:
         """Nicht verfügbar im yfinance-Modus."""
         return {}
 
+    def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Konvertiert unbekannte Symbole automatisch ins yfinance-Format:
+        - Forex 6-Buchstaben (EURCHF) → EURCHF=X
+        - Krypto-Paare (BTCUSD) → BTC-USD
+        - Bereits konvertierte Symbole (enthalten =X oder -) → unverändert
+        - Aktien → unverändert
+        """
+        # Bereits konvertiert oder hat Sonderzeichen
+        if "=X" in symbol or "-" in symbol or "." in symbol:
+            return symbol
+
+        # 6-buchstabige Forex-Paare erkennen
+        if len(symbol) == 6:
+            base = symbol[:3].upper()
+            quote = symbol[3:].upper()
+            if base in _FOREX_CURRENCIES and quote in _FOREX_CURRENCIES:
+                normalized = f"{symbol}=X"
+                logger.debug(f"Symbol automatisch normalisiert: {symbol} → {normalized}")
+                return normalized
+
+        # Krypto-Paare erkennen (z.B. BTCUSD → BTC-USD)
+        sym_upper = symbol.upper()
+        for crypto in _CRYPTO_BASES:
+            if sym_upper.startswith(crypto) and len(sym_upper) > len(crypto):
+                rest = sym_upper[len(crypto):]
+                normalized = f"{crypto}-{rest}"
+                logger.debug(f"Symbol automatisch normalisiert: {symbol} → {normalized}")
+                return normalized
+
+        return symbol
+
     def _resolve_symbol(self, symbol: str) -> str:
-        """Übersetzt MT5-Symbol zu yfinance-Ticker, falls nötig."""
-        return self._symbol_map.get(symbol, symbol)
+        """Übersetzt MT5-Symbol zu yfinance-Ticker: erst explizite Map, dann Auto-Normalisierung."""
+        if symbol in self._symbol_map:
+            return self._symbol_map[symbol]
+        return self._normalize_symbol(symbol)
