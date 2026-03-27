@@ -69,8 +69,27 @@ class WatchAgent:
             self.sync_positions_from_mt5()
 
         # Status nur alle N Zyklen in Konsole ausgeben
-        if do_full_sync and self.order_db is not None:
-            print(self.order_db.format_status())
+        if do_full_sync:
+            from utils.terminal_display import print_watch_update
+            with self._lock:
+                pending_snapshot = list(self._pending_signals)
+            # Statistik aus OrderDB ableiten wenn verfügbar
+            stats: dict = {
+                "watched_symbols": len({s.get("instrument", "") for s in pending_snapshot}),
+                "trades_today": 0,
+                "pnl_today": 0.0,
+            }
+            if self.order_db is not None:
+                try:
+                    all_orders = self.order_db.get_all_orders() if hasattr(self.order_db, "get_all_orders") else []
+                    today = datetime.now(timezone.utc).date().isoformat()
+                    today_orders = [o for o in all_orders if str(o.get("created_at", "")).startswith(today)]
+                    stats["trades_today"] = len(today_orders)
+                    pnl = sum(float(o.get("pnl") or 0.0) for o in today_orders if o.get("pnl") is not None)
+                    stats["pnl_today"] = pnl
+                except Exception:
+                    pass
+            print_watch_update(pending_snapshot, stats)
 
         # Log nur bei Aktivität oder alle N Zyklen
         if result or do_full_sync:

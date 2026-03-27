@@ -11,6 +11,8 @@ from typing import Any
 
 from agents.base_agent import BaseAgent
 from models.signal import Signal, SignalStatus
+from utils.terminal_display import print_signal_table
+from utils.session import get_current_session
 
 
 class ReportingAgent(BaseAgent):
@@ -47,6 +49,33 @@ class ReportingAgent(BaseAgent):
         self.logger.info(
             f"Report erstellt: {report_path} | "
             f"Signale gesamt: {len(signals)} | Freigegeben: {len(top_signals)}"
+        )
+
+        # Terminal-Ausgabe: Top-10-Tabelle
+        macro_info: dict = {"cycle_id": cycle_id}
+        if top_signals:
+            agent_scores = top_signals[0].agent_scores or {}
+            macro_data = agent_scores.get("macro") or {}
+            if isinstance(macro_data, dict):
+                macro_info["macro_bias"] = macro_data.get("macro_bias", "neutral")
+            vol_data = agent_scores.get("volatility") or {}
+            if isinstance(vol_data, dict):
+                macro_info["volatility_ok"] = vol_data.get("setup_allowed", True)
+
+        secondary = [
+            s for s in signals
+            if s.status.value != "approved" and s.confidence_score > 0
+        ]
+        try:
+            session = get_current_session()
+        except Exception:
+            session = "N/A"
+
+        print_signal_table(
+            [s.model_dump(mode="json") for s in top_signals],
+            macro_info=macro_info,
+            session=session,
+            secondary_signals=[s.model_dump(mode="json") for s in secondary],
         )
 
         return {

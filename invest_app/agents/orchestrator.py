@@ -149,10 +149,9 @@ class Orchestrator:
         symbols = self.active_symbols if self.active_symbols else getattr(self.config, "all_symbols", [])
 
         if getattr(self.config, "show_cycle_banner", True):
-            now = datetime.now().strftime("%H:%M:%S")
-            print(f"\n{'─' * 50}")
-            print(f" Zyklus #{self._cycle_count} | {now} | {len(symbols)} Symbole")
-            print(f"{'─' * 50}")
+            from utils.terminal_display import print_cycle_banner
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            print_cycle_banner(self._cycle_count, len(symbols), ts)
 
         all_signals: list[Signal] = []
 
