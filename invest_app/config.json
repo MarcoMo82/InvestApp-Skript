@@ -25,6 +25,7 @@
       "EURGBP": "EURGBP=X",
       "EURJPY": "EURJPY=X",
       "GBPJPY": "GBPJPY=X",
+      "EURCHF": "EURCHF=X",
       "XAUUSD": "GC=F"
     },
     "scanner_enabled": true,
