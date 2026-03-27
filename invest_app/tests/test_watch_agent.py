@@ -265,7 +265,8 @@ class TestCheckAndExecute:
         """Nach Ausführung wird Signal aus der Pending-Liste entfernt."""
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
-        agent = WatchAgent(connector=connector)
+        connector.place_market_order = MagicMock(return_value=12345)
+        agent = WatchAgent(connector=connector, trade_connector=connector)
         signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
         agent.add_pending_signal(signal)
         executed = agent.check_and_execute()
@@ -298,7 +299,7 @@ class TestCheckAndExecute:
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         connector.place_market_order = MagicMock(return_value=None)  # Fehler simulieren
-        agent = WatchAgent(connector=connector)
+        agent = WatchAgent(connector=connector, trade_connector=connector)
         signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
         agent.add_pending_signal(signal)
 
@@ -313,7 +314,7 @@ class TestCheckAndExecute:
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         connector.place_market_order = MagicMock(return_value=None)
-        agent = WatchAgent(connector=connector)
+        agent = WatchAgent(connector=connector, trade_connector=connector)
         signal = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
         agent.add_pending_signal(signal)
 
@@ -323,6 +324,21 @@ class TestCheckAndExecute:
 
         assert agent.pending_count == 0
         assert signal.get("_retry_count") == 3
+
+    def test_place_order_blocked_when_no_trade_connector(self):
+        """Kein trade_connector → Order-Fehler wird geloggt, Signal bleibt pending (Retry 1)."""
+        ohlcv = _make_ohlcv(price=1.1000)
+        connector = _make_connector(ohlcv)
+        # trade_connector=None simuliert: MT5 nicht verfügbar (yfinance-Fallback)
+        agent = WatchAgent(connector=connector, trade_connector=None)
+        signal = {"instrument": "EURCHF", "entry_type": "market", "entry_price": 1.1000}
+        agent.add_pending_signal(signal)
+
+        executed = agent.check_and_execute()
+
+        assert len(executed) == 0
+        assert agent.pending_count == 1
+        assert signal.get("_retry_count") == 1
 
     def test_signal_id_assigned_on_add(self):
         """add_pending_signal weist eindeutige _signal_id zu."""
@@ -340,7 +356,7 @@ class TestCheckAndExecute:
         ohlcv = _make_ohlcv(price=1.1000)
         connector = _make_connector(ohlcv)
         connector.place_market_order = MagicMock(return_value=12345)
-        agent = WatchAgent(connector=connector)
+        agent = WatchAgent(connector=connector, trade_connector=connector)
 
         signal_a = {"instrument": "EURUSD", "entry_type": "market", "entry_price": 1.1000}
         agent.add_pending_signal(signal_a)

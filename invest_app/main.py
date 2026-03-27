@@ -104,6 +104,15 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
         order_db = OrderDB(db_path=order_db_path)
         logger.info(f"[Init] OrderDB initialisiert: {order_db_path}")
 
+    # Trade-Connector: nur MT5Connector darf place_market_order aufrufen
+    try:
+        from data.mt5_connector import MT5_AVAILABLE, MT5Connector
+        trade_connector = connector if (MT5_AVAILABLE and isinstance(connector, MT5Connector)) else None
+    except Exception:
+        trade_connector = None
+    if trade_connector is None:
+        logger.warning("[Init] Kein MT5Connector verfügbar – Watch Agent kann keine Orders platzieren.")
+
     # Simulation Agent (optional, nur wenn aktiviert)
     simulation_agent = None
     if config.simulation_mode_enabled:
@@ -116,6 +125,7 @@ def build_orchestrator(connector, db: Database, claude: ClaudeClient, news: News
 
     watch_agent = WatchAgent(
         connector=connector,
+        trade_connector=trade_connector,
         db=db,
         config=config,
         simulation_agent=simulation_agent,

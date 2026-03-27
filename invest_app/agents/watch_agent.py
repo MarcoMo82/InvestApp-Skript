@@ -29,6 +29,7 @@ class WatchAgent:
     def __init__(
         self,
         connector: Any,
+        trade_connector: Optional[Any] = None,
         db: Any = None,
         config: Any = None,
         simulation_agent: Optional[Any] = None,
@@ -38,6 +39,7 @@ class WatchAgent:
         cycle_logger: Optional[Any] = None,
     ) -> None:
         self.connector = connector
+        self.trade_connector = trade_connector  # MT5Connector für Order-Execution (kein yfinance)
         self.db = db
         self._config = config
         self.simulation_agent = simulation_agent
@@ -546,20 +548,23 @@ class WatchAgent:
                     signal_id=signal_id,
                 )
 
-            # ── Order senden ────────────────────────────────────────────────
-            ticket = None
-            if hasattr(self.connector, "place_market_order"):
-                ticket = self.connector.place_market_order(
-                    symbol=symbol,
-                    direction=direction,
-                    lot_size=lot_size,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
+            # ── Order senden (nur über MT5Connector) ────────────────────────
+            _trade_conn = self.trade_connector
+            if _trade_conn is None:
+                logger.error(
+                    f"[Watch] {symbol} | Order-Fehler: MT5Connector nicht initialisiert – prüfe MT5-Verbindung"
                 )
-            else:
-                logger.warning(
-                    f"[Watch] {symbol} | MT5: place_market_order nicht verfügbar → ✗ BLOCKIERT"
-                )
+                if self.order_db is not None:
+                    self.order_db.mark_failed(order_id)
+                return None
+
+            ticket = _trade_conn.place_market_order(
+                symbol=symbol,
+                direction=direction,
+                lot_size=lot_size,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
 
             # ── Ergebnis in DB speichern ────────────────────────────────────
             if ticket is not None:
