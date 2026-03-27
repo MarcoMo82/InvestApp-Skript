@@ -90,7 +90,12 @@ void AnalyzeSymbol(string symbol)
    // TODO: if(!MacroFilter.IsAllowed(symbol)) return;
 
    // [2] Trend-Analyse
-   // TODO: int trendBias = TrendAnalysis.GetBias(symbol); // 1=Long, -1=Short, 0=Neutral
+   TrendResult trend = AnalyzeTrend(symbol, g_config);
+   if(trend.bias == 0)
+   {
+      LOG_D("InvestApp_Indexes", symbol, "Kein klarer Trend");
+      return;
+   }
 
    // [3] Volatilität prüfen
    VolatilityResult vol = CheckVolatility(symbol, g_config);
@@ -112,8 +117,10 @@ void AnalyzeSymbol(string symbol)
    // TODO: SignalResult signal = EntrySignal.GetSignal(symbol, trendBias, levels);
    // TODO: if(signal.type == SIGNAL_NONE) return;
 
-   // [6] Validierung
-   // TODO: if(!TradeValidator.Validate(symbol, signal)) return;
+   // [6] Validierung (direction kommt vom EntrySignal – vorerst trend.bias als Platzhalter)
+   RiskResult risk_placeholder; risk_placeholder.isValid = false; // bis RiskManager aufgerufen wird
+   // ValidationResult val = ValidateTrade(symbol, trend.bias, risk_placeholder, g_config);
+   // Wird aktiviert sobald EntrySignal + RiskManager vollständig integriert sind
 
    // [7] Risiko berechnen
    // TODO: RiskResult risk = RiskManager.Calculate(symbol, signal);
