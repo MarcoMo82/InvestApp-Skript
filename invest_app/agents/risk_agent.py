@@ -170,10 +170,11 @@ class RiskAgent(BaseAgent):
                 f"SL-Distanz {sl_distance:.5f} überschreitet Maximum {max_sl:.5f} ({instrument_type})"
             )
 
-        # 3%-Grenze: SL > 3% des Entry-Preises → Trade verwerfen
+        # SL-Grenze: Fallback-Check (Lot-Größe noch nicht bekannt)
+        # Konservative Grenze: SL > 5% des Entry-Preises → Trade verwerfen
         sl_pct = sl_distance / entry_price if entry_price > 0 else 0.0
-        if sl_pct > 0.03:
-            return self._rejected(symbol, f"SL > 3% des Preises ({sl_pct:.2%})")
+        if sl_pct > 0.05:
+            return self._rejected(symbol, f"SL > 5% des Preises ({sl_pct:.2%})")
 
         # CRV berechnen
         sl_diff = abs(entry_price - stop_loss)

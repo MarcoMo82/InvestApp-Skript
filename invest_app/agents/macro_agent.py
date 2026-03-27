@@ -15,7 +15,7 @@ from utils.claude_client import ClaudeClient
 from data.news_fetcher import NewsFetcher
 
 # Safe-Haven Symbole: werden bei Risk-Off bevorzugt
-SAFE_HAVEN_SYMBOLS: list[str] = ["USDJPY", "USDCHF", "XAUUSD", "EURJPY", "GBPJPY"]
+SAFE_HAVEN_SYMBOLS: list[str] = ["USDJPY", "USDCHF", "XAUUSD", "CHFJPY"]
 
 
 def _extract_currencies(symbol: str) -> list[str]:
@@ -88,7 +88,7 @@ class MacroAgent(BaseAgent):
         market_news = self.news_fetcher.get_finanznachrichten()
         mt5_news = (
             self.data_connector.get_news(hours_back=4)
-            if hasattr(self, "data_connector") and hasattr(self.data_connector, "get_news")
+            if self.data_connector is not None and hasattr(self.data_connector, "get_news")
             else []
         )
 
@@ -198,7 +198,7 @@ class MacroAgent(BaseAgent):
         return False, ""
 
 
-    def get_risk_sentiment(self, vix_threshold: float = 20.0) -> str:
+    def get_risk_sentiment(self, vix_threshold: float = 25.0) -> str:
         """
         Ermittelt die aktuelle Risikobereitschaft am Markt über den VIX-Index.
 
@@ -235,8 +235,8 @@ class MacroAgent(BaseAgent):
     def _default_result(symbol: str, reason: str) -> dict:
         return {
             "macro_bias": "neutral",
-            "event_risk": "medium",
-            "trading_allowed": True,
+            "event_risk": "unknown",
+            "trading_allowed": False,
             "key_themes": [],
             "reasoning": f"Standardwerte verwendet: {reason}",
             "symbol": symbol,

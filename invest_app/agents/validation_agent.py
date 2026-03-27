@@ -152,13 +152,16 @@ class ValidationAgent(BaseAgent):
             {"macro": macro, "trend": trend, "volatility": vol, "level": level, "entry": entry}
         )
         base_score = result.get("confidence_score", 50.0)
-        modified_score = base_score + mtf["modifier"] * 100
+        modifier = mtf.get("modifier", 1.0)
+        if modifier < 1.0:
+            modified_score = base_score * modifier
+        else:
+            modified_score = base_score + (modifier - 1.0) * 100
         result["confidence_score"] = min(100.0, max(0.0, modified_score))
         result["mtf_confluence"] = mtf
 
         result["symbol"] = symbol
-        confidence_score = min(max(result.get("confidence_score", 0.0), 0.0), 100.0)
-        result["confidence_score"] = confidence_score
+        confidence_score = result.get("confidence_score", 0.0)
         result["validated"] = confidence_score >= 80.0
         return result
 
@@ -168,7 +171,7 @@ class ValidationAgent(BaseAgent):
         """Prüft harte Ausschlussregeln. Gibt Grund zurück oder None."""
         if not macro.get("trading_allowed", True):
             return "Makro-Freigabe verweigert (hohes Event-Risiko)"
-        if not vol.get("setup_allowed", True):
+        if not vol.get("setup_allowed", False):
             return "Volatilitäts-Freigabe verweigert"
         if not entry.get("entry_found", False):
             return "Kein valides Entry-Setup"
@@ -243,16 +246,16 @@ class ValidationAgent(BaseAgent):
             details.append("Makro-Bias kongruent")
 
         if score >= 5:
-            modifier = 0.35
+            modifier = 1.35
             label = "triple_confluence"
         elif score >= 3:
-            modifier = 0.15
+            modifier = 1.15
             label = "dual_confluence"
         elif score >= 1:
-            modifier = 0.0
+            modifier = 1.0
             label = "weak_confluence"
         else:
-            modifier = -0.5
+            modifier = 0.5
             label = "no_confluence"
 
         return {

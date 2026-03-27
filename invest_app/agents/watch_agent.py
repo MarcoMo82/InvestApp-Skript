@@ -193,8 +193,9 @@ class WatchAgent:
                             atr = float(tr.rolling(14).mean().iloc[-1])
                             if len(ohlcv) >= 21:
                                 ema21 = float(closes.ewm(span=21).mean().iloc[-1])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"ATR/EMA-Berechnung fehlgeschlagen: {e}")
+                        continue
 
                     if atr <= 0:
                         continue
@@ -281,7 +282,7 @@ class WatchAgent:
         elif entry_type == "rejection":
             # Bestätigende Folgekerze: letzte Kerze muss in Signalrichtung schließen
             last_candle = ohlcv_1m.iloc[-1]
-            if direction == "buy":
+            if direction == "long":
                 return float(last_candle["close"]) > float(last_candle["open"])  # Bullische Kerze
             else:
                 return float(last_candle["close"]) < float(last_candle["open"])  # Bearische Kerze
@@ -499,8 +500,7 @@ class WatchAgent:
             closed_tickets = db_tickets - mt5_tickets
 
             if closed_tickets and hasattr(self.connector, "get_closed_deals"):
-                from datetime import datetime as dt
-                since = self._last_sync_ts or (dt.utcnow().timestamp() - 3600)
+                since = self._last_sync_ts or (datetime.now(timezone.utc).timestamp() - 3600)
                 deals = self.connector.get_closed_deals(since)
                 deals_by_ticket = {d["ticket"]: d for d in deals}
 
@@ -521,8 +521,7 @@ class WatchAgent:
                 for ticket in closed_tickets:
                     self.order_db.update_status(ticket=ticket, status="closed")
 
-            from datetime import datetime as dt
-            self._last_sync_ts = dt.utcnow().timestamp()
+            self._last_sync_ts = datetime.now(timezone.utc).timestamp()
 
         except Exception as e:
             logger.error(f"[Watch-Agent] sync_positions_from_mt5 Fehler: {e}")
@@ -560,9 +559,6 @@ class WatchAgent:
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                 )
-            elif hasattr(self.connector, "place_order"):
-                result = self.connector.place_order(signal) or {}
-                ticket = result.get("order_id") or result.get("ticket")
 
             if ticket is not None:
                 logger.info(f"[Simulation] ✅ Order erfolgreich: Ticket #{ticket}")

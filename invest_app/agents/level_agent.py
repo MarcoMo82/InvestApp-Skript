@@ -271,7 +271,7 @@ class LevelAgent(BaseAgent):
 
         for i in range(1, len(ohlcv) - 1):
             body_size = abs(closes[i] - opens[i])
-            if body_size < atr * 1.5:
+            if body_size < atr * 3.0:
                 continue
 
             # Starker Aufwärts-Impuls nach bearischer Kerze → bullischer OB

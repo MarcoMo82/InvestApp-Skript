@@ -59,18 +59,18 @@ class TestOrderBlocks:
         agent = LevelAgent()
         atr = 1.0
         # Kerze i-1: bearisch (close < open)
-        # Kerze i: starker Aufwärts-Impuls (body > ATR*1.5, close > open)
+        # Kerze i: starker Aufwärts-Impuls (body > ATR*3.0, close > open)
         # Kerze i+1: neutral
         df = pd.DataFrame({
             "open":  [100.0, 99.0, 101.0, 102.0, 103.0],
-            "high":  [101.0, 100.0, 104.0, 103.0, 104.0],
+            "high":  [101.0, 100.0, 105.0, 103.0, 104.0],
             "low":   [99.0,  97.0,  100.5, 101.0, 102.0],
-            "close": [99.5,  97.5,  103.5, 102.5, 103.5],  # Kerze 1 bearisch, Kerze 2 starker Anstieg
+            "close": [99.5,  97.5,  104.5, 102.5, 103.5],  # Kerze 1 bearisch, Kerze 2 starker Anstieg
             "volume": [1000] * 5,
         })
         obs = agent._find_order_blocks(df, atr)
         types = [ob["type"] for ob in obs]
-        # Kerze 2 (index 2): body = 103.5 - 101.0 = 2.5 > 1.5 ATR, aufwärts → Kerze 1 bullischer OB
+        # Kerze 2 (index 2): body = 104.5 - 101.0 = 3.5 > 3.0 ATR, aufwärts → Kerze 1 bullischer OB
         assert "bullish" in types
 
     def test_bearish_ob_detection(self):

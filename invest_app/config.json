@@ -169,7 +169,7 @@
   },
   "safe_haven": {
     "safe_haven_enabled": true,
-    "vix_risk_off_threshold": 20,
+    "vix_risk_off_threshold": 25,
     "safe_haven_confidence_bonus": 10
   },
   "smc": {

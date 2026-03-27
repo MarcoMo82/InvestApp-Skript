@@ -142,7 +142,7 @@ class ScannerAgent:
             if atr_avg <= 0 or pd.isna(atr):
                 return 0.0, breakdown
             atr_ratio = atr / atr_avg
-            if atr_ratio < 0.5 or atr_ratio > 2.5:
+            if atr_ratio < 0.5 or atr_ratio > 2.0:
                 return 0.0, breakdown
             if 0.7 <= atr_ratio <= 2.0:
                 score += 30

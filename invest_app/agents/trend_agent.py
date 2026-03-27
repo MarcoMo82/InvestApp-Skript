@@ -156,24 +156,28 @@ class TrendAgent(BaseAgent):
         highs = df["high"].iloc[-lookback:].values
         lows = df["low"].iloc[-lookback:].values
 
-        # Lokale Pivots
+        # Lokale Pivots (2 Kerzen je Seite für robustere Erkennung)
         pivot_highs = [
             highs[i]
-            for i in range(1, len(highs) - 1)
-            if highs[i] > highs[i - 1] and highs[i] > highs[i + 1]
+            for i in range(2, len(highs) - 2)
+            if highs[i] > highs[i - 1] and highs[i] > highs[i - 2]
+            and highs[i] > highs[i + 1] and highs[i] > highs[i + 2]
         ]
         pivot_lows = [
             lows[i]
-            for i in range(1, len(lows) - 1)
-            if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]
+            for i in range(2, len(lows) - 2)
+            if lows[i] < lows[i - 1] and lows[i] < lows[i - 2]
+            and lows[i] < lows[i + 1] and lows[i] < lows[i + 2]
         ]
 
         hh_hl = False
         lh_ll = False
 
-        if len(pivot_highs) >= 2 and len(pivot_lows) >= 2:
-            hh_hl = pivot_highs[-1] > pivot_highs[-2] and pivot_lows[-1] > pivot_lows[-2]
-            lh_ll = pivot_highs[-1] < pivot_highs[-2] and pivot_lows[-1] < pivot_lows[-2]
+        if len(pivot_highs) >= 3 and len(pivot_lows) >= 3:
+            hh_hl = (pivot_highs[-1] > pivot_highs[-2] > pivot_highs[-3] and
+                     pivot_lows[-1] > pivot_lows[-2] > pivot_lows[-3])
+            lh_ll = (pivot_highs[-1] < pivot_highs[-2] < pivot_highs[-3] and
+                     pivot_lows[-1] < pivot_lows[-2] < pivot_lows[-3])
 
         return {"hh_hl": hh_hl, "lh_ll": lh_ll}
 

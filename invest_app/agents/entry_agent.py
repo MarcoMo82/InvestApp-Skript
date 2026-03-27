@@ -96,14 +96,15 @@ class EntryAgent(BaseAgent):
 
             breakout = self._check_breakout(df, direction, level_price, tolerance)
             if breakout["found"]:
-                # Handbuch Kap. 7.1: Volumen < 150% des 20P-Durchschnitts → Trade ablehnen
-                if "volume" in df.columns and len(df) >= 20:
-                    vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
-                    current_vol = float(df["volume"].iloc[-1])
-                    if vol_avg_20 > 0 and current_vol < vol_avg_20 * 1.5:
-                        return self._no_entry(
-                            symbol, "Breakout ohne Volumenbestätigung (< 150% Durchschnitt)"
-                        )
+                # Handbuch Kap. 7.1: Volumen-Pflichtcheck für Breakout
+                if "volume" not in df.columns or len(df) < 20:
+                    return self._no_entry(symbol, "Volumen-Daten fehlen – Pflichtcheck nicht möglich")
+                vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
+                current_vol = float(df["volume"].iloc[-1])
+                if vol_avg_20 > 0 and current_vol < vol_avg_20 * 1.5:
+                    return self._no_entry(
+                        symbol, "Breakout ohne Volumenbestätigung (< 150% Durchschnitt)"
+                    )
 
                 return {
                     "symbol": symbol,
