@@ -293,6 +293,10 @@
     "cluster_threshold_pct": 0.001,
     "top_n_zones": 5
   },
+  "analysis": {
+    "_comment": "Intervall für die Dauerschleife des standalone Level-Agent",
+    "interval_seconds": 900
+  },
   "execution": {
     "magic_number": 20260101,
     "slippage_points": 10,

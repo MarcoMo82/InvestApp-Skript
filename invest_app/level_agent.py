@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -386,10 +387,55 @@ class LevelAgent:
 
 
 # ---------------------------------------------------------------------------
-# Standalone-Ausführung
+# Standalone-Ausführung (Dauerschleife)
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def _run_loop() -> None:
     agent = LevelAgent()
-    success = agent.run()
-    sys.exit(0 if success else 1)
+
+    interval: int = int(
+        agent._cfg.get("analysis", {}).get("interval_seconds", 900)
+    )
+
+    print(
+        f"[LevelAgent] Dauerschleife gestartet – Intervall: {interval}s "
+        f"({interval // 60} min). CTRL+C zum Beenden.",
+        flush=True,
+    )
+
+    while True:
+        run_start = datetime.now(timezone.utc)
+        ts = run_start.strftime("%Y-%m-%dT%H:%M:%S")
+        print(f"[{ts}] [LevelAgent] Starte Durchlauf ...", flush=True)
+
+        try:
+            success = agent.run()
+            status = "OK" if success else "FEHLER (run() gab False zurück)"
+        except Exception as exc:  # noqa: BLE001
+            success = False
+            status = f"FEHLER: {exc}"
+            agent.logger.error("[LevelAgent] Unbehandelter Fehler im Durchlauf: %s", exc, exc_info=True)
+
+        end_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        next_run = datetime.now(timezone.utc) + timedelta(seconds=interval)
+        next_ts = next_run.strftime("%Y-%m-%dT%H:%M:%S")
+
+        print(
+            f"[{end_ts}] [LevelAgent] Durchlauf beendet – Status: {status}. "
+            f"Nächste Ausführung: {next_ts}",
+            flush=True,
+        )
+
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            break
+
+
+if __name__ == "__main__":
+    try:
+        _run_loop()
+    except KeyboardInterrupt:
+        pass
+    print("[LevelAgent] Graceful Shutdown – Auf Wiedersehen.", flush=True)
+    sys.exit(0)
