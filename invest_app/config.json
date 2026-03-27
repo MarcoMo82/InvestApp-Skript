@@ -250,6 +250,12 @@
     "range_candles_lookback": 12,
     "range_buffer_pips": 2
   },
+  "level_agent": {
+    "_comment": "Parameter für den standalone Level-Agent (level_agent.py)",
+    "swing_lookback": 5,
+    "cluster_threshold_pct": 0.001,
+    "top_n_zones": 5
+  },
   "execution": {
     "magic_number": 20260101,
     "slippage_points": 10,
