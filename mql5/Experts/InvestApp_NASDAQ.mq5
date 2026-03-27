@@ -93,7 +93,17 @@ void AnalyzeSymbol(string symbol)
    // TODO: int trendBias = TrendAnalysis.GetBias(symbol); // 1=Long, -1=Short, 0=Neutral
 
    // [3] Volatilität prüfen
-   // TODO: if(!VolatilityFilter.IsAcceptable(symbol)) return;
+   VolatilityResult vol = CheckVolatility(symbol, g_config);
+   if(!vol.isAcceptable)
+   {
+      LOG_D("InvestApp_NASDAQ", symbol, "Volatilität: " + vol.reject_reason);
+      return;
+   }
+   if(!IsSessionActive(g_config))
+   {
+      LOG_D("InvestApp_NASDAQ", symbol, "Session nicht aktiv");
+      return;
+   }
 
    // [4] Level-Erkennung (aus zones.json)
    // TODO: LevelData levels = LevelDetection.GetZones(symbol);
