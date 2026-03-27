@@ -31,8 +31,9 @@ string SYMBOLS[] = {
    "AUDUSD", "USDCAD", "NZDUSD", "EURGBP",
    "EURJPY", "GBPJPY"
 };
-int    SYMBOL_COUNT = 10;
-datetime g_lastAnalysisTime = 0;
+int       SYMBOL_COUNT = 10;
+datetime  g_lastAnalysisTime = 0;
+AppConfig g_config;
 
 //+------------------------------------------------------------------+
 //| Expert Advisor initialisieren                                     |
@@ -49,8 +50,11 @@ int OnInit()
    Print("[InvestApp_Forex] EA gestartet | Symbole: ", SYMBOL_COUNT,
          " | Intervall: ", AnalysisIntervalSeconds, "s");
 
-   // TODO: ConfigReader initialisieren
-   // TODO: Erste Konfiguration laden
+   if(!LoadConfig(g_config, ConfigPath))
+      Print("[InvestApp_Forex] WARNUNG: Config konnte nicht geladen werden, nutze Standardwerte");
+   else
+      Print("[InvestApp_Forex] Config geladen | Version: ", g_config.version,
+            " | Stand: ", g_config.last_updated);
 
    return INIT_SUCCEEDED;
 }

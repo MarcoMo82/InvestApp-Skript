@@ -25,9 +25,10 @@ input string ConfigPath = "";                  // Pfad zu config.json (leer = Co
 input bool   EnableTrading = true;             // Trading aktiv
 
 //--- Globale Variablen
-string SYMBOLS[] = {"DE40", "US500", "US30", "UK100", "JP225"};
-int    SYMBOL_COUNT = 5;
-datetime g_lastAnalysisTime = 0;
+string    SYMBOLS[] = {"DE40", "US500", "US30", "UK100", "JP225"};
+int       SYMBOL_COUNT = 5;
+datetime  g_lastAnalysisTime = 0;
+AppConfig g_config;
 
 //+------------------------------------------------------------------+
 //| Expert Advisor initialisieren                                     |
@@ -44,8 +45,11 @@ int OnInit()
    Print("[InvestApp_Indexes] EA gestartet | Symbole: ", SYMBOL_COUNT,
          " | Intervall: ", AnalysisIntervalSeconds, "s");
 
-   // TODO: ConfigReader initialisieren
-   // TODO: Erste Konfiguration laden
+   if(!LoadConfig(g_config, ConfigPath))
+      Print("[InvestApp_Indexes] WARNUNG: Config konnte nicht geladen werden, nutze Standardwerte");
+   else
+      Print("[InvestApp_Indexes] Config geladen | Version: ", g_config.version,
+            " | Stand: ", g_config.last_updated);
 
    return INIT_SUCCEEDED;
 }

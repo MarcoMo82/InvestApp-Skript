@@ -25,9 +25,10 @@ input string ConfigPath = "";                  // Pfad zu config.json (leer = Co
 input bool   EnableTrading = true;             // Trading aktiv
 
 //--- Globale Variablen
-string SYMBOLS[] = {"USTEC", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"};
-int    SYMBOL_COUNT = 8;
-datetime g_lastAnalysisTime = 0;
+string    SYMBOLS[] = {"USTEC", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"};
+int       SYMBOL_COUNT = 8;
+datetime  g_lastAnalysisTime = 0;
+AppConfig g_config;
 
 //+------------------------------------------------------------------+
 //| Expert Advisor initialisieren                                     |
@@ -44,8 +45,11 @@ int OnInit()
    Print("[InvestApp_NASDAQ] EA gestartet | Symbole: ", SYMBOL_COUNT,
          " | Intervall: ", AnalysisIntervalSeconds, "s");
 
-   // TODO: ConfigReader initialisieren
-   // TODO: Erste Konfiguration laden
+   if(!LoadConfig(g_config, ConfigPath))
+      Print("[InvestApp_NASDAQ] WARNUNG: Config konnte nicht geladen werden, nutze Standardwerte");
+   else
+      Print("[InvestApp_NASDAQ] Config geladen | Version: ", g_config.version,
+            " | Stand: ", g_config.last_updated);
 
    return INIT_SUCCEEDED;
 }
