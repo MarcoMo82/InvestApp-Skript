@@ -54,7 +54,9 @@ int _ParseDoubleArray(string arr_str, double &out[], int max_values = 100)
       {
          if(i > start)
          {
-            string token = StringTrimLeft(StringTrimRight(StringSubstr(arr_str, start, i - start)));
+            string token = StringSubstr(arr_str, start, i - start);
+            StringTrimRight(token);
+            StringTrimLeft(token);
             if(StringLen(token) > 0)
             {
                double val = StringToDouble(token);
