@@ -41,6 +41,16 @@ AppConfig g_config;
 double    g_last_atr = 0.0;
 
 //+------------------------------------------------------------------+
+//| Prüft ob Symbol in der EA-Symbolliste ist                        |
+//+------------------------------------------------------------------+
+bool IsOurSymbol(string symbol)
+{
+   for(int i = 0; i < SYMBOL_COUNT; i++)
+      if(SYMBOLS[i] == symbol) return true;
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Expert Advisor initialisieren                                     |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -60,6 +70,26 @@ int OnInit()
    else
       Print("[InvestApp_Forex] Config geladen | Version: ", g_config.version,
             " | Stand: ", g_config.last_updated);
+
+   // Startup: Bestehende offene Positionen in State Machine laden
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         if(PositionGetInteger(POSITION_MAGIC) == 20260101)
+         {
+            string sym = PositionGetString(POSITION_SYMBOL);
+            if(IsOurSymbol(sym))
+            {
+               double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+               double atr   = GetATR(sym, PERIOD_M15, 14, 1);
+               RegisterPosition(ticket, entry, atr);
+               LOG_I(EA_NAME, sym, "Startup: Bestehende Position geladen | Ticket=" + IntegerToString(ticket));
+            }
+         }
+      }
+   }
 
    return INIT_SUCCEEDED;
 }
