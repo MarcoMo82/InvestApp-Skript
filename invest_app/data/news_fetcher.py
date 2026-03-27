@@ -20,17 +20,18 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-CACHE_TTL_SECONDS = 3600  # 60 Minuten
+CACHE_TTL_SECONDS = 3600  # 60 Minuten (Fallback-Default)
 CACHE_FILE = Path(__file__).parent.parent / "Output" / "news_cache.json"
 
 
 class _CacheEntry:
-    def __init__(self, data: list[dict]) -> None:
+    def __init__(self, data: list[dict], ttl: int = CACHE_TTL_SECONDS) -> None:
         self.data = data
+        self.ttl = ttl
         self.timestamp = time.monotonic()
 
     def is_valid(self) -> bool:
-        return (time.monotonic() - self.timestamp) < CACHE_TTL_SECONDS
+        return (time.monotonic() - self.timestamp) < self.ttl
 
 
 class NewsFetcher:
@@ -43,6 +44,7 @@ class NewsFetcher:
     def __init__(self, cfg: Config | None = None) -> None:
         self.config = cfg or _default_config
         self._cache: dict[str, _CacheEntry] = {}
+        self._cache_ttl: int = getattr(self.config, "news_cache_ttl", CACHE_TTL_SECONDS)
         yahoo_status = "aktiv" if self.config.news_yahoo_enabled else "deaktiviert"
         logger.info(f"[News] Quelle: MetaTrader 5 | Yahoo-API: {yahoo_status}")
 
@@ -66,13 +68,13 @@ class NewsFetcher:
             logger.warning(f"Disk-Cache konnte nicht gespeichert werden: {e}")
 
     def _is_disk_cache_valid(self, cache_entry: dict) -> bool:
-        """Prüft ob ein Disk-Cache-Eintrag noch gültig ist (< 60 Minuten alt)."""
+        """Prüft ob ein Disk-Cache-Eintrag noch gültig ist."""
         if "timestamp" not in cache_entry:
             return False
         try:
             cached_at = datetime.fromisoformat(cache_entry["timestamp"])
             age = datetime.now(timezone.utc) - cached_at
-            return age.total_seconds() < CACHE_TTL_SECONDS
+            return age.total_seconds() < self._cache_ttl
         except Exception:
             return False
 
@@ -109,7 +111,7 @@ class NewsFetcher:
                 .total_seconds() / 60
             )
             logger.info(f"News aus Disk-Cache: {symbol} | Alter: {age_min} Min")
-            self._cache[cache_key] = _CacheEntry(articles)
+            self._cache[cache_key] = _CacheEntry(articles, self._cache_ttl)
             return articles
 
         # Schicht 3: API-Aufruf
@@ -155,7 +157,7 @@ class NewsFetcher:
                     })
 
             # In beide Caches schreiben
-            self._cache[cache_key] = _CacheEntry(news)
+            self._cache[cache_key] = _CacheEntry(news, self._cache_ttl)
             disk_cache[disk_key] = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "articles": news,
@@ -201,12 +203,12 @@ class NewsFetcher:
                 .total_seconds() / 60
             )
             logger.info(f"Markt-News aus Disk-Cache: {query} | Alter: {age_min} Min")
-            self._cache[cache_key] = _CacheEntry(articles)
+            self._cache[cache_key] = _CacheEntry(articles, self._cache_ttl)
             return articles
 
         # Schicht 3: Neu laden
         news = self._fetch_yahoo_market_news(query)
-        self._cache[cache_key] = _CacheEntry(news)
+        self._cache[cache_key] = _CacheEntry(news, self._cache_ttl)
         disk_cache[disk_key] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "articles": news,

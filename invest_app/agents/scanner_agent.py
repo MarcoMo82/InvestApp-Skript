@@ -39,10 +39,12 @@ class ScannerAgent:
             score, breakdown = self._score_symbol(symbol)
             if score >= min_score:
                 scored.append((symbol, score, breakdown))
-        self.active_symbols, cat_excluded = self._select_top_symbols(scored)
+        selected, cat_excluded = self._select_top_symbols(scored)
+        top_n = getattr(self.config, "scanner_top_n", 5)
+        self.active_symbols = selected[:top_n]
         self.logger.info(
             f"[Scanner] {len(candidates)} gescannt, {len(scored)} gescort, "
-            f"{len(self.active_symbols)} ausgewählt, {cat_excluded} durch Kategorie-Limit aussortiert"
+            f"{len(self.active_symbols)} ausgewählt (top_n={top_n}), {cat_excluded} durch Kategorie-Limit aussortiert"
         )
 
         # Symbol-Persistenz: scored Liste in DB speichern

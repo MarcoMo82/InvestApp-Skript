@@ -57,7 +57,8 @@ class SymbolProvider:
         """
         max_age = getattr(self.config, "symbol_provider_max_file_age_minutes", 5)
         common_path = self._find_common_files_path()
-        symbols_file = common_path / "available_symbols.json"
+        filename = getattr(self.config, "mt5_symbols_file", "available_symbols.json")
+        symbols_file = common_path / filename
 
         if symbols_file.exists():
             age_minutes = (time.time() - symbols_file.stat().st_mtime) / 60

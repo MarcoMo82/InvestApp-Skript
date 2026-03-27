@@ -235,9 +235,10 @@ def main() -> None:
     if getattr(config, "show_startup_banner", True):
         startup_initialization(config, active)
 
-    # Ersten Zyklus sofort ausführen
-    logger.info("Starte ersten Analyse-Zyklus...")
-    orchestrator.run_cycle()
+    # Ersten Zyklus sofort ausführen (wenn startup_analysis_enabled)
+    if getattr(config, "startup_analysis_enabled", True):
+        logger.info("Startup-Analyse läuft...")
+        orchestrator.run_cycle()
 
     # Scheduler für automatische Zyklen starten
     orchestrator.start_scheduler()

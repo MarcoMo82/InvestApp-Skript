@@ -264,8 +264,9 @@ class MT5Connector:
             "status": "pending",
         }
         common_path = self._get_common_files_path()
-        path = common_path / "pending_order.json"
-        logger.info(f"[mt5_connector] Schreibe pending_order.json nach: {common_path}")
+        order_file = getattr(self.config, "mt5_order_file", "pending_order.json") if self.config else "pending_order.json"
+        path = common_path / order_file
+        logger.info(f"[mt5_connector] Schreibe {order_file} nach: {common_path}")
         logger.warning(
             "[mt5_connector] HINWEIS: Stelle sicher dass InvestApp_Zones EA auf einem Chart läuft!"
         )
@@ -278,8 +279,10 @@ class MT5Connector:
         return True
 
     def read_order_result(self, timeout_seconds: int = 10) -> dict:
-        """Wartet auf Ergebnis vom EA (pending_order.json status != pending)."""
-        path = self._get_common_files_path() / "pending_order.json"
+        """Wartet auf Ergebnis vom EA (order file status != pending)."""
+        result_file = getattr(self.config, "mt5_result_file", None) if self.config else None
+        order_file = result_file or getattr(self.config, "mt5_order_file", "pending_order.json") if self.config else "pending_order.json"
+        path = self._get_common_files_path() / order_file
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             try:

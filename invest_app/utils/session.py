@@ -59,10 +59,16 @@ def get_current_session(config: Any = None) -> str:
         asian_start = getattr(config, "asian_session_start_utc", _ASIAN_START)
         asian_end = getattr(config, "asian_session_end_utc", _ASIAN_END)
 
-    london_start = _LONDON_START
-    london_end = _LONDON_END
-    ny_start = _NY_START
-    ny_end = _NY_END
+    if config is not None:
+        london_start = config.get("london_open_hour", _LONDON_START) if hasattr(config, "get") else getattr(config, "london_open_hour", _LONDON_START)
+        london_end = config.get("london_close_hour", _LONDON_END) if hasattr(config, "get") else getattr(config, "london_close_hour", _LONDON_END)
+        ny_start = config.get("ny_open_hour", _NY_START) if hasattr(config, "get") else getattr(config, "ny_open_hour", _NY_START)
+        ny_end = config.get("ny_close_hour", _NY_END) if hasattr(config, "get") else getattr(config, "ny_close_hour", _NY_END)
+    else:
+        london_start = _LONDON_START
+        london_end = _LONDON_END
+        ny_start = _NY_START
+        ny_end = _NY_END
 
     in_london = london_start <= hour < london_end
     in_ny = ny_start <= hour < ny_end

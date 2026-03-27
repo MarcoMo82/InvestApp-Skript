@@ -455,9 +455,11 @@ class EntryAgent(BaseAgent):
             if ob_present:
                 smc_bonus += ob_bonus
 
+        triple_bonus = getattr(cfg, "smc_triple_bonus", 20) if cfg is not None else 20
+        double_bonus = getattr(cfg, "smc_double_bonus", 10) if cfg is not None else 10
         at_key_level = nearest_level is not None
         confluence_bonus = (
-            self._calc_smc_confluence_bonus(fvg_present, ob_present, at_key_level)
+            self._calc_smc_confluence_bonus(fvg_present, ob_present, at_key_level, triple_bonus, double_bonus)
             if triple_enabled
             else 0
         )
@@ -474,17 +476,18 @@ class EntryAgent(BaseAgent):
 
     @staticmethod
     def _calc_smc_confluence_bonus(
-        fvg_present: bool, ob_present: bool, at_key_level: bool
+        fvg_present: bool, ob_present: bool, at_key_level: bool,
+        triple_bonus: int = 20, double_bonus: int = 10,
     ) -> int:
         """
         Berechnet den SMC Triple-Confluence Bonus (P3.3).
-        Drei erfüllt: +20, zwei erfüllt: +10, einer: +0 (bereits durch P3.1/P3.2 vergeben).
+        Drei erfüllt: +triple_bonus, zwei erfüllt: +double_bonus, einer: +0.
         """
         count = int(fvg_present) + int(ob_present) + int(at_key_level)
         if count == 3:
-            return 20
+            return triple_bonus
         if count == 2:
-            return 10
+            return double_bonus
         return 0
 
     @staticmethod

@@ -135,6 +135,8 @@ class RiskAgent(BaseAgent):
         # Technischer SL (Swing-Low/High) hat Vorrang
         tech_sl = self._calculate_swing_sl(ohlcv, direction, entry_price)
 
+        atr_tp_multiplier = getattr(self._config, "atr_tp_multiplier", 4.0) if self._config is not None else 4.0
+
         if direction == "long":
             atr_stop = entry_price - atr_sl_distance
             # Technischer SL: wähle den der mehr Schutz bietet (= weiter weg vom Entry)
@@ -143,7 +145,9 @@ class RiskAgent(BaseAgent):
             else:
                 stop_loss = atr_stop
             sl_distance = entry_price - stop_loss
-            take_profit = entry_price + (sl_distance * self.min_crv)
+            atr_tp = atr * atr_tp_multiplier
+            crv_tp = sl_distance * self.min_crv
+            take_profit = entry_price + max(atr_tp, crv_tp)
         elif direction == "short":
             atr_stop = entry_price + atr_sl_distance
             if tech_sl is not None:
@@ -151,7 +155,9 @@ class RiskAgent(BaseAgent):
             else:
                 stop_loss = atr_stop
             sl_distance = stop_loss - entry_price
-            take_profit = entry_price - (sl_distance * self.min_crv)
+            atr_tp = atr * atr_tp_multiplier
+            crv_tp = sl_distance * self.min_crv
+            take_profit = entry_price - max(atr_tp, crv_tp)
         else:
             return self._rejected(symbol, f"Ungültige Richtung: {direction}")
 

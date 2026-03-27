@@ -446,9 +446,9 @@ class Orchestrator:
         if self.watch_agent is not None:
             self._scheduler.add_job(
                 func=self.watch_agent.run_watch_cycle,
-                trigger=IntervalTrigger(minutes=1),
+                trigger=IntervalTrigger(seconds=getattr(self.config, "watch_interval_seconds", 60)),
                 id="watch_agent_cycle",
-                name="Watch-Agent (1min)",
+                name="Watch-Agent",
                 replace_existing=True,
             )
             logger.info("Watch-Agent gestartet (1-Minuten-Intervall).")

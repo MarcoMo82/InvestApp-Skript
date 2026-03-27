@@ -57,21 +57,22 @@ class WatchAgent:
         logger.info(f"Signal zur Überwachung hinzugefügt: {signal_dict.get('instrument')}")
 
     def run_watch_cycle(self) -> list[dict]:
-        """Hauptmethode – alle 15 Sekunden aufrufen."""
+        """Hauptmethode – wird periodisch durch den Scheduler aufgerufen."""
         self._sync_counter += 1
-        do_full_sync = (self._sync_counter % 4 == 0)  # Alle 60s (4 × 15s)
+        heartbeat_interval = getattr(self._config, "watch_agent_heartbeat_interval", 5) if self._config else 5
+        do_full_sync = (self._sync_counter % heartbeat_interval == 0)
 
         result = self.check_and_execute()
 
-        # MT5-Positionen nur alle 60s synchronisieren
+        # MT5-Positionen nur alle N Zyklen synchronisieren
         if do_full_sync:
             self.sync_positions_from_mt5()
 
-        # Status nur alle 60s in Konsole ausgeben
+        # Status nur alle N Zyklen in Konsole ausgeben
         if do_full_sync and self.order_db is not None:
             print(self.order_db.format_status())
 
-        # Log nur bei Aktivität oder alle 60s
+        # Log nur bei Aktivität oder alle N Zyklen
         if result or do_full_sync:
             logger.info(
                 f"[Watch-Agent] ♦ 15s-Check | "
@@ -342,6 +343,9 @@ class WatchAgent:
                 pass
 
             # 3. Order Blocks: konsumierte entfernen
+            ob_consumed_threshold = getattr(
+                self._config, "watch_agent_zone_update_ob_consumed_threshold", 0.3
+            ) if self._config else 0.3
             order_blocks = zones.get("order_blocks", [])
             if order_blocks:
                 updated_obs = []
@@ -349,11 +353,18 @@ class WatchAgent:
                     consumed = ob.get("consumed", False)
                     ob_high = ob.get("high", 0)
                     ob_low = ob.get("low", 0)
+                    ob_range = ob_high - ob_low
                     direction = ob.get("direction", "bullish")
-                    if direction == "bullish" and current_price < ob_low:
-                        consumed = True
-                    elif direction == "bearish" and current_price > ob_high:
-                        consumed = True
+                    if direction == "bullish":
+                        # Konsumiert wenn Preis tiefer als (ob_low - threshold * ob_range)
+                        threshold_price = ob_low - ob_consumed_threshold * ob_range if ob_range > 0 else ob_low
+                        if current_price < threshold_price:
+                            consumed = True
+                    elif direction == "bearish":
+                        # Konsumiert wenn Preis höher als (ob_high + threshold * ob_range)
+                        threshold_price = ob_high + ob_consumed_threshold * ob_range if ob_range > 0 else ob_high
+                        if current_price > threshold_price:
+                            consumed = True
                     if not consumed:
                         updated_obs.append(ob)
                 if len(updated_obs) != len(order_blocks):
