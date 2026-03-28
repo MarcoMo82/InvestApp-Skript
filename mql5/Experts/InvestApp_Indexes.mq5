@@ -23,6 +23,7 @@
 #include <InvestApp/TradeManagement.mqh>
 #include <InvestApp/OrderExecution.mqh>
 #include <InvestApp/SymbolManager.mqh>
+#include <InvestApp/SMCDetection.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -205,6 +206,22 @@ void AnalyzeSymbol(string symbol)
    {
       LOG_W("InvestApp_Indexes", symbol, "Order blocked: Kein Signal | " + signal.summary);
       return;
+   }
+
+   // [5b] SMC Confluence Bonus
+   {
+      double atr_val = GetATR(symbol, PERIOD_M15, 14, 1);
+      FairValueGap fvgs[];
+      OrderBlock   obs[];
+      int fvg_n = DetectFVGs(symbol, PERIOD_M15, fvgs, atr_val);
+      int ob_n  = DetectOrderBlocks(symbol, PERIOD_M15, obs, atr_val);
+      double smc_bonus = CalcSMCBonus(signal.entry_price, fvgs, fvg_n, obs, ob_n, atr_val);
+      if(smc_bonus > 0.0)
+      {
+         signal.confidence += smc_bonus;
+         LOG_I(EA_NAME, symbol, StringFormat("SMC Confluence Bonus +%.0f%% | Confidence: %.0f%%",
+               smc_bonus*100, signal.confidence*100));
+      }
    }
 
    // [6] Validierung
