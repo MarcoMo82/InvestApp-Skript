@@ -241,7 +241,11 @@
     "triangle_confidence_bonus": 5,
     "sl_atr_multiplier": 2.0,
     "tp_rr_ratio": 2.0,
-    "signal_confidence_threshold": 0.65
+    "signal_confidence_threshold": 0.65,
+    "false_breakout_volume_ratio": 0.8,
+    "false_breakout_close_back": true,
+    "false_breakout_rsi_divergence": true,
+    "false_breakout_rsi_period": 14
   },
   "filters": {
     "_comment": "MQL5 ConfigReader – ATR-Ratio, Spread und ADX Schwellenwerte für VolatilityFilter/TrendAnalysis",

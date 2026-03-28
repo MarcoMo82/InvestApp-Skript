@@ -204,3 +204,74 @@ class TestVolumeCheckBreakout:
             "direction": "long",
         })
         assert result["entry_found"] is False
+
+
+class TestFalseBreakoutFilter:
+    """Tests für _is_false_breakout() – Fakeout-Erkennung."""
+
+    def _make_fakeout_df(
+        self,
+        n: int = 50,
+        level: float = 1.1050,
+        close_above_level: bool = True,
+        volume_ratio: float = 0.5,
+        high_above_level: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Erstellt einen DataFrame für Fakeout-Tests.
+        close_above_level=False → Kerze schließt zurück unter Level (Fakeout-Signal).
+        volume_ratio: Volumen der letzten Kerze relativ zum Basis-Volumen.
+        """
+        np.random.seed(42)
+        base = level - 0.0010
+        closes = base + np.cumsum(np.random.randn(n) * 0.0003)
+        closes[-2] = level - 0.0002  # Vorletzte Kerze unter Level
+
+        base_vol = 1000.0
+        volumes = np.full(n, base_vol)
+        volumes[-1] = base_vol * volume_ratio
+
+        if close_above_level:
+            closes[-1] = level + 0.0005  # Schlusskurs über Level
+        else:
+            closes[-1] = level - 0.0003  # Schlusskurs zurück unter Level (Close-Back)
+
+        highs = closes + 0.0005
+        if high_above_level:
+            highs[-1] = level + 0.0010  # Wick über Level (Breakout-Versuch)
+        lows = closes - 0.0005
+        opens = closes - 0.0002
+
+        return pd.DataFrame({
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+        })
+
+    def test_weak_volume_and_close_back_returns_true(self):
+        """Schwaches Volumen + Close zurück unter Level → _is_false_breakout gibt True zurück."""
+        agent = EntryAgent()
+        level = 1.1050
+        # Close-Back: Kerze schließt unter Level; Volumen = 50% des Durchschnitts
+        df = self._make_fakeout_df(
+            level=level,
+            close_above_level=False,
+            volume_ratio=0.5,
+        )
+        result = agent._is_false_breakout(df, "long", level, atr=0.0005)
+        assert result is True, "Schwaches Volumen + Close-Back muss Fakeout-Verdacht auslösen"
+
+    def test_strong_volume_close_above_level_returns_false(self):
+        """Starkes Volumen + Close über Level → _is_false_breakout gibt False zurück."""
+        agent = EntryAgent()
+        level = 1.1050
+        # Echtes Breakout: Schlusskurs über Level, Volumen = 200% des Durchschnitts
+        df = self._make_fakeout_df(
+            level=level,
+            close_above_level=True,
+            volume_ratio=2.0,
+        )
+        result = agent._is_false_breakout(df, "long", level, atr=0.0005)
+        assert result is False, "Starkes Volumen + Close über Level darf kein Fakeout sein"

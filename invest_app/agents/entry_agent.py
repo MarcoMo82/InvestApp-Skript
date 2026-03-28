@@ -94,7 +94,7 @@ class EntryAgent(BaseAgent):
             level_price = nearest_level["price"]
             tolerance = atr * 0.5 if atr > 0 else level_price * 0.001
 
-            breakout = self._check_breakout(df, direction, level_price, tolerance)
+            breakout = self._check_breakout(df, direction, level_price, tolerance, atr=atr)
             if breakout["found"]:
                 # Handbuch Kap. 7.1: Volumen < 150% des 20P-Durchschnitts → Trade ablehnen
                 if "volume" in df.columns and len(df) >= 20:
@@ -164,7 +164,8 @@ class EntryAgent(BaseAgent):
         return self._no_entry(symbol, "Kein valides Entry-Setup gefunden")
 
     def _check_breakout(
-        self, df: pd.DataFrame, direction: str, level: float, tolerance: float
+        self, df: pd.DataFrame, direction: str, level: float, tolerance: float,
+        atr: float = 0.0,
     ) -> dict:
         """Prüft auf Breakout über/unter ein Schlüssellevel."""
         last_close = float(df["close"].iloc[-1])
@@ -173,6 +174,12 @@ class EntryAgent(BaseAgent):
         if direction == "long":
             # Schlusskurs über Level, vorherige Kerze darunter
             if last_close > level + tolerance and prev_close <= level:
+                if self._is_false_breakout(df, direction, level, atr):
+                    self.logger.warning(
+                        f"False Breakout erkannt: Bullischer Ausbruch über {level:.5f} "
+                        "als Fakeout eingestuft → Entry abgelehnt"
+                    )
+                    return {"found": False, "reason": "false_breakout_rejected"}
                 return {
                     "found": True,
                     "entry_price": last_close,
@@ -181,6 +188,12 @@ class EntryAgent(BaseAgent):
                 }
         elif direction == "short":
             if last_close < level - tolerance and prev_close >= level:
+                if self._is_false_breakout(df, direction, level, atr):
+                    self.logger.warning(
+                        f"False Breakout erkannt: Bearischer Ausbruch unter {level:.5f} "
+                        "als Fakeout eingestuft → Entry abgelehnt"
+                    )
+                    return {"found": False, "reason": "false_breakout_rejected"}
                 return {
                     "found": True,
                     "entry_price": last_close,
@@ -188,6 +201,69 @@ class EntryAgent(BaseAgent):
                     "description": f"Bearischer Breakout unter {level:.5f} mit Schlusskurs-Bestätigung",
                 }
         return {"found": False}
+
+    def _is_false_breakout(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        level: float,
+        atr: float,
+    ) -> bool:
+        """
+        Prüft ob ein Ausbruch über/unter ein Level ein False Breakout ist.
+
+        Kriterien (ODER-Verknüpfung → True = Fakeout-Verdacht):
+        1. Volumen < false_breakout_volume_ratio × 20-Bar-Durchschnitt
+        2. Kerze schließt zurück unter/über das Level (keine Follow-Through)
+        3. RSI-Divergenz: Preis macht neues High/Low aber RSI nicht
+
+        Returns True wenn Fakeout-Verdacht, False wenn Ausbruch plausibel.
+        """
+        cfg = self._config
+        vol_ratio = getattr(cfg, "false_breakout_volume_ratio", 0.8) if cfg is not None else 0.8
+        check_close_back = getattr(cfg, "false_breakout_close_back", True) if cfg is not None else True
+        check_rsi_div = getattr(cfg, "false_breakout_rsi_divergence", True) if cfg is not None else True
+        rsi_period = int(getattr(cfg, "false_breakout_rsi_period", 14) if cfg is not None else 14)
+
+        close = float(df["close"].iloc[-1])
+
+        # Kriterium 1: Schwaches Volumen
+        if "volume" in df.columns and len(df) >= 20:
+            vol_avg_20 = float(df["volume"].rolling(20).mean().iloc[-1])
+            current_vol = float(df["volume"].iloc[-1])
+            if vol_avg_20 > 0 and current_vol < vol_avg_20 * vol_ratio:
+                return True
+
+        # Kriterium 2: Kerze schließt zurück hinter Level (Close-Back)
+        if check_close_back:
+            if direction == "long" and close <= level:
+                return True
+            if direction == "short" and close >= level:
+                return True
+
+        # Kriterium 3: RSI-Divergenz (Preis neues High/Low, RSI nicht)
+        if check_rsi_div and len(df) >= rsi_period + 5:
+            delta = df["close"].diff()
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.ewm(com=rsi_period - 1, adjust=False).mean()
+            avg_loss = loss.ewm(com=rsi_period - 1, adjust=False).mean()
+            rs = avg_gain / avg_loss.replace(0, float("nan"))
+            rsi_series = 100 - (100 / (1 + rs))
+
+            lookback = min(5, len(df) - 1)
+            if direction == "long":
+                price_higher = float(df["high"].iloc[-1]) > float(df["high"].iloc[-1 - lookback])
+                rsi_higher = float(rsi_series.iloc[-1]) > float(rsi_series.iloc[-1 - lookback])
+                if price_higher and not rsi_higher:
+                    return True
+            elif direction == "short":
+                price_lower = float(df["low"].iloc[-1]) < float(df["low"].iloc[-1 - lookback])
+                rsi_lower = float(rsi_series.iloc[-1]) < float(rsi_series.iloc[-1 - lookback])
+                if price_lower and not rsi_lower:
+                    return True
+
+        return False
 
     def _check_rejection(
         self, df: pd.DataFrame, direction: str, level: float, tolerance: float

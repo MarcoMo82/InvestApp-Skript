@@ -234,6 +234,57 @@ bool _CheckVolume(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| False Breakout / Fakeout prüfen                                 |
+//| Kriterien (ODER → true = Fakeout-Verdacht):                     |
+//|   1. Schlusskurs zurück unter/über level (Close-Back)           |
+//|   2. Volumen < false_breakout_volume_ratio × 20-Bar-Durchschnitt|
+//| Returns true wenn Fakeout-Verdacht → kein Entry.               |
+//+------------------------------------------------------------------+
+bool _IsFalseBreakout(string symbol, int direction, double level, double atr)
+{
+   // Letzte abgeschlossene Kerze (shift=1)
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(symbol, PERIOD_M15, 1, 1, rates) < 1) return false;
+
+   double cur_close = rates[0].close;
+
+   // Kriterium 1: Close-Back – Schlusskurs hinter Level zurückgekehrt
+   if(direction == 1 && cur_close <= level)
+   {
+      LOG_W("EntrySignal", symbol,
+            StringFormat("False Breakout: Close %.5f <= Level %.5f (Fakeout Long)",
+                         cur_close, level));
+      return true;
+   }
+   if(direction == -1 && cur_close >= level)
+   {
+      LOG_W("EntrySignal", symbol,
+            StringFormat("False Breakout: Close %.5f >= Level %.5f (Fakeout Short)",
+                         cur_close, level));
+      return true;
+   }
+
+   // Kriterium 2: Schwaches Volumen < 80% des 20-Bar-Durchschnitts
+   long vol_cur = iVolume(symbol, PERIOD_M15, 1);
+   if(vol_cur > 0)
+   {
+      long vol_sum = 0;
+      for(int i = 1; i <= 20; i++) vol_sum += iVolume(symbol, PERIOD_M15, i);
+      long vol_avg = vol_sum / 20;
+      if(vol_avg > 0 && vol_cur < (long)(vol_avg * 0.8))
+      {
+         LOG_W("EntrySignal", symbol,
+               StringFormat("False Breakout: Schwaches Volumen %d < 80%% Avg %d",
+                            (int)vol_cur, (int)vol_avg));
+         return true;
+      }
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Stop-Hunt-Reversal erkennen (Liquidity Sweep)                   |
 //| direction: 1=Long, -1=Short                                      |
 //| Kriterien:                                                        |
@@ -432,12 +483,22 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       if(direction == 1 && zones.nearest_resistance > 0.0)
       {
          if(cur_close > zones.nearest_resistance + atr_val * 0.3)
-            is_breakout = true;
+         {
+            if(_IsFalseBreakout(symbol, direction, zones.nearest_resistance, atr_val))
+               LOG_W("EntrySignal", symbol, "Breakout Long als False Breakout eingestuft → kein Entry");
+            else
+               is_breakout = true;
+         }
       }
       else if(direction == -1 && zones.nearest_support > 0.0)
       {
          if(cur_close < zones.nearest_support - atr_val * 0.3)
-            is_breakout = true;
+         {
+            if(_IsFalseBreakout(symbol, direction, zones.nearest_support, atr_val))
+               LOG_W("EntrySignal", symbol, "Breakout Short als False Breakout eingestuft → kein Entry");
+            else
+               is_breakout = true;
+         }
       }
 
       // --- Stop-Hunt-Reversal (nur wenn kein Breakout) ---
