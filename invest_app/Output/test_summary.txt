@@ -1,0 +1,145 @@
+================================================================================
+  InvestApp – Integrationstest-Zusammenfassung
+  Datum: 2026-03-28
+================================================================================
+
+GESAMTERGEBNIS: PASSED ✓
+
+  Gesamt:   519 Tests
+  Bestanden: 519
+  Fehlgeschlagen: 0
+  Fehler: 0
+  Neue Tests (dieser Lauf): 102
+  Coverage gesamt: 74.9% (vorher: 71.0%)
+
+================================================================================
+  COVERAGE NACH MODUL (investApp-Module)
+================================================================================
+
+Modul                                     | Tests | Passed | Failed | Coverage%
+------------------------------------------+-------+--------+--------+----------
+agents/startup_sync.py                    |    27 |     27 |      0 |   100.0%  ← NEU +100%
+agents/entry_agent.py                     |    39 |     39 |      0 |    88.5%  ← +11.5%
+agents/risk_agent.py                      |    43 |     43 |      0 |    87.7%  ← +4.7%
+agents/validation_agent.py               |    49 |     49 |      0 |    92.3%  ← +28.3%
+agents/orchestrator.py                    |     6 |      6 |      0 |    36.3%
+agents/watch_agent.py                     |    39 |     39 |      0 |    68.3%
+agents/macro_agent.py                     |     3 |      3 |      0 |    50.0%
+agents/learning_agent.py                  |    28 |     28 |      0 |    58.1%
+agents/reporting_agent.py                 |     0 |      0 |      0 |    21.8%
+agents/scanner_agent.py                   |    15 |     15 |      0 |    51.1%
+agents/chart_exporter.py                  |    13 |     13 |      0 |    81.4%
+agents/level_agent.py                     |     9 |      9 |      0 |    92.0%
+agents/trend_agent.py                     |     8 |      8 |      0 |    92.3%
+agents/volatility_agent.py               |    11 |     11 |      0 |    83.2%
+agents/simulation_agent.py               |    12 |     12 |      0 |    98.2%
+data/economic_calendar.py                |    28 |     28 |      0 |    82.0%
+data/mt5_connector.py                     |    22 |     22 |      0 |    31.8%
+data/news_fetcher.py                      |    16 |     16 |      0 |    63.1%
+data/order_db.py                          |    22 |     22 |      0 |    61.6%
+data/symbol_provider.py                   |     0 |      0 |      0 |    22.4%
+data/yfinance_connector.py               |     0 |      0 |      0 |     0.0%
+utils/database.py                         |    18 |     18 |      0 |    82.1%
+utils/correlation.py                      |     0 |      0 |      0 |    40.0%
+utils/session.py                          |     0 |      0 |      0 |    26.6%
+utils/smc.py                              |     0 |      0 |      0 |    69.2%
+utils/patterns.py                         |     0 |      0 |      0 |    74.3%
+
+================================================================================
+  FEHLGESCHLAGENE TESTS
+================================================================================
+
+  Keine. Alle 519 Tests bestehen.
+
+================================================================================
+  METHODEN MIT < 60% COVERAGE (Handlungsbedarf)
+================================================================================
+
+  agents/orchestrator.py          36.3%  – Komplex; erfordert vollständige
+                                           Pipeline-Mocks (MT5, DB, alle Agents)
+  agents/reporting_agent.py       21.8%  – Formatierungslogik, benötigt
+                                           vollständige Signal-Objekte
+  data/mt5_connector.py           31.8%  – MT5-IPC-Abhängigkeit; nur mit
+                                           echtem MT5 oder tiefem Mock testbar
+  data/symbol_provider.py         22.4%  – MT5-abhängig
+  data/yfinance_connector.py       0.0%  – Netzwerk-Abhängigkeit (yfinance)
+  agents/macro_agent.py           50.0%  – LLM + News-Fetcher erforderlich
+  agents/scanner_agent.py         51.1%  – Komplexe Pipeline-Abhängigkeiten
+  agents/learning_agent.py        58.1%  – Nachgelagerter Agent; DB + History
+  utils/session.py                26.6%  – Time-abhängig; braucht Mock für UTC-Zeit
+  utils/correlation.py            40.0%  – Einfach testbar, Tests noch nicht vorhanden
+  utils/terminal_display.py        8.6%  – UI-Code; kein Kernlogik-Risiko
+
+================================================================================
+  NEUE TEST-DATEIEN (dieser Lauf)
+================================================================================
+
+  1. tests/test_startup_sync.py          (27 Tests, 100% Coverage)
+     – sync_mt5_positions_to_db(): None-Source, leere Liste, JSON-Datei,
+       fehlendes JSON, kaputtes JSON, bereits bekannte Tickets, fehlende
+       Ticket-Felder, upsert-Fehler, DB-Fehler
+     – sync_from_connector(): None-Connector, kein get_open_positions(),
+       Exception, leere Liste, None-Rückgabe
+
+  2. tests/test_entry_agent_extended.py  (37 Tests, 97% Coverage)
+     – _is_false_breakout(): schwaches Volumen allein, Close-Back Long/Short,
+       starkes Volumen + kein Close-Back (kein Fakeout), zu wenige Bars
+     – detect_stop_hunt_reversal(): Long/Short mit Wick, ATR=0, df zu kurz,
+       Close erholt sich nicht, Sweep zu tief, Sweep zu flach, neutral
+     – _check_rejection(): Long/Short, Wick unter Ratio (nicht gefunden),
+       Doji (range=0), bearische Kerze als Long-Rejection abgelehnt
+     – _check_breakout(): echter Long/Short Breakout, False-Breakout
+       (schwaches Volumen → false_breakout_rejected), Preis unter Level
+
+  3. tests/test_risk_agent_extended.py   (23 Tests, 96% Coverage)
+     – has_opposing_position(): Long vs Short, gleiche/verschiedene Symbole,
+       leere Liste, geschlossene Orders, pending Orders, via analyze()
+     – max_lot Hard-Cap: genau an Grenze, darüber (gekappt), darunter,
+       Config-Priorität, min_lot-Floor, sl_pips=0, pip_value=0
+     – Max Open Positions: 0/1/2 (erlaubt), 3 (blockiert), 4 (blockiert),
+       ohne Config (kein Check), Ablehnungsgrund enthält Count
+     – Gesamtexposure: innerhalb Limit (ok), über Limit (blockiert)
+
+  4. tests/test_validation_agent_extended.py (15 Tests, 100% Coverage)
+     – _check_hard_rules(): Macro blockiert, Volatilität blockiert,
+       kein Entry, Risk-Gate, alle ok → None
+     – Hard Rejection via analyze(): confidence=0, validated=False
+     – _rule_based_score(): Basis 50, +8 Breakout, +7 Rejection, +5 Pullback,
+       0 stop_hunt_reversal, +10 starker Trend, -10 schwacher Trend,
+       +5 Makro-Bias, +5 CRV≥3, Cap 100, Floor 0, Fallback-Summary
+     – Confidence-Grenzwerte: exactly 80% (validated=True), 79% (False),
+       validated immer konsistent mit confidence_score ≥ 80%
+
+================================================================================
+  COVERAGE-VERBESSERUNGEN (vorher → nachher)
+================================================================================
+
+  startup_sync.py:      0.0% → 100.0%  (+100.0%)  ★★★
+  validation_agent.py: 64.0% →  92.3%  (+28.3%)   ★★★
+  entry_agent.py:      77.0% →  88.5%  (+11.5%)   ★★
+  risk_agent.py:       83.0% →  87.7%  (+4.7%)    ★
+  Gesamt:              71.0% →  74.9%  (+3.9%)
+
+================================================================================
+  EMPFEHLUNGEN FÜR WEITERE TESTABDECKUNG
+================================================================================
+
+  HOHE PRIORITÄT (< 50% Coverage):
+  1. data/yfinance_connector.py (0%) – Mock yfinance.download() Aufrufe
+  2. agents/reporting_agent.py (22%) – Signal-Objekte als Input verwenden
+  3. data/symbol_provider.py (22%) – MT5-Connector mocken
+  4. data/mt5_connector.py (32%) – IPC-Kommunikation mocken (file-based)
+  5. agents/orchestrator.py (36%) – Full-Pipeline-Mock mit allen Agent-Stubs
+
+  MITTLERE PRIORITÄT (50-60% Coverage):
+  6. utils/session.py (27%) – datetime.utcnow() / timezone patchen
+  7. utils/correlation.py (40%) – Einfach testbar, schnell implementierbar
+  8. agents/scanner_agent.py (51%) – Scanner-Loop mit Timer-Mock
+  9. agents/macro_agent.py (50%) – LLM-Mock + News-Fetcher-Mock
+  10. agents/learning_agent.py (58%) – Post-Trade History simulieren
+
+  HINWEIS: MT5-abhängige Module (mt5_connector, symbol_provider) sind ohne
+  echten MT5-Prozess nicht vollständig testbar. File-basierte IPC-Simulation
+  ist möglich aber aufwändig. Priorisierung nach Produktionsrisiko empfohlen.
+
+================================================================================
