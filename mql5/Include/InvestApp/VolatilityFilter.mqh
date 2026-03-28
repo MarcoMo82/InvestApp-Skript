@@ -19,6 +19,8 @@ struct VolatilityResult
    double spread_pips;      // aktueller Spread in Pips
    string market_phase;     // "trending", "ranging", "high_volatility", "low_volatility"
    string reject_reason;    // Ablehnungsgrund wenn isAcceptable=false
+   double bb_modifier;      // Bollinger-Band Modifier (0.85 Squeeze, 1.0 normal, 1.15 Walk)
+   double session_bonus;    // Session-Overlap Bonus: 0.05 (Overlap), 0.02 (London/NY solo), 0.0
 };
 
 //+------------------------------------------------------------------+
@@ -34,6 +36,8 @@ VolatilityResult CheckVolatility(string symbol, AppConfig &cfg)
    res.spread_pips   = 0.0;
    res.market_phase  = "";
    res.reject_reason = "";
+   res.bb_modifier   = 1.0;
+   res.session_bonus = 0.0;
 
    // ATR-Handle (14 Perioden, 15m TF)
    int handle = iATR(symbol, PERIOD_M15, 14);
@@ -118,11 +122,81 @@ VolatilityResult CheckVolatility(string symbol, AppConfig &cfg)
 
    res.isAcceptable = (phase_ok && spread_ok);
 
+   // --- Bollinger Bands Squeeze Erkennung ---
+   // 20 Perioden, 2.0 StdDev auf M15
+   {
+      int bb_handle = iBands(symbol, PERIOD_M15, 20, 0, 2.0, PRICE_CLOSE);
+      if(bb_handle != INVALID_HANDLE)
+      {
+         double bb_upper[], bb_lower[], bb_mid[];
+         ArraySetAsSeries(bb_upper, true);
+         ArraySetAsSeries(bb_lower, true);
+         ArraySetAsSeries(bb_mid,   true);
+
+         // 21 Werte für aktuellen und 20 Historien-Werte
+         if(CopyBuffer(bb_handle, 1, 1, 21, bb_upper) >= 21 &&
+            CopyBuffer(bb_handle, 2, 1, 21, bb_lower) >= 21 &&
+            CopyBuffer(bb_handle, 0, 1, 21, bb_mid)   >= 21)
+         {
+            double cur_width = bb_upper[0] - bb_lower[0];
+            double cur_close = iClose(symbol, PERIOD_M15, 1);
+
+            // Durchschnittliche BB-Breite der letzten 20 Bars
+            double avg_width = 0.0;
+            for(int wi = 1; wi <= 20; wi++)
+               avg_width += (bb_upper[wi] - bb_lower[wi]);
+            avg_width /= 20.0;
+
+            if(avg_width > 0.0)
+            {
+               double width_ratio = cur_width / avg_width;
+
+               if(width_ratio < 0.6) // Squeeze: BB sehr eng
+               {
+                  res.bb_modifier = 0.85;
+               }
+               else
+               {
+                  // BB Walk: Kurs nahe an oberer oder unterer Band
+                  bool walk_up   = (cur_close >= bb_upper[0] - (cur_width * 0.1));
+                  bool walk_down = (cur_close <= bb_lower[0] + (cur_width * 0.1));
+                  if(walk_up || walk_down)
+                     res.bb_modifier = 1.15;
+                  else
+                     res.bb_modifier = 1.0;
+               }
+            }
+         }
+         IndicatorRelease(bb_handle);
+      }
+   }
+
+   // --- Session-Overlap Bonus ---
+   {
+      MqlDateTime dt;
+      TimeToStruct(TimeGMT(), dt);
+      int hour = dt.hour;
+
+      // London/NY Overlap: 13:00–16:00 UTC → +0.05
+      if(hour >= 13 && hour < 16)
+         res.session_bonus = 0.05;
+      // London solo: 08:00–13:00 UTC → +0.02
+      else if(hour >= 8 && hour < 13)
+         res.session_bonus = 0.02;
+      // NY solo: 16:00–22:00 UTC → +0.02
+      else if(hour >= 16 && hour < 22)
+         res.session_bonus = 0.02;
+      // Sonstige (Asian, Nacht) → kein Bonus
+      else
+         res.session_bonus = 0.0;
+   }
+
    // Logging
-   string status_sym = res.isAcceptable ? "✓" : "✗";
+   string status_sym = res.isAcceptable ? "OK" : "BLOCK";
    string log_msg = StringFormat(
-      "ATR=%.5f | Ratio=%.2f | Spread=%.1f Pips | Phase=%s | %s",
-      res.atr_current, res.atr_ratio, res.spread_pips, res.market_phase, status_sym);
+      "ATR=%.5f | Ratio=%.2f | Spread=%.1f Pips | Phase=%s | BB-Mod=%.2f | SessBonus=%.2f | %s",
+      res.atr_current, res.atr_ratio, res.spread_pips,
+      res.market_phase, res.bb_modifier, res.session_bonus, status_sym);
 
    if(res.isAcceptable)
       LOG_I("VolatilityFilter", symbol, log_msg);

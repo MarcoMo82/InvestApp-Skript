@@ -285,7 +285,9 @@
     "enabled": true,
     "activate_minutes_before_rollover": 60,
     "range_candles_lookback": 12,
-    "range_buffer_pips": 2
+    "range_buffer_pips": 2,
+    "sideways_atr_ratio": 0.5,
+    "min_profit_pips": 5
   },
   "level_agent": {
     "_comment": "Parameter für den standalone Level-Agent (level_agent.py)",

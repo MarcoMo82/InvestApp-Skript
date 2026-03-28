@@ -19,11 +19,14 @@ struct TrendResult
    int             score;         // Rohscore: Summe der Einzelsignale (signed)
    int             max_score;     // maximal erreichbarer Absolutscore
    double          confidence;    // |score| / max_score (0.0–1.0)
+   double          ema9;          // EMA9 aktueller Wert (Stufe 2c)
    double          ema21;         // EMA21 aktueller Wert (Einstiegs-TF)
    double          ema50;         // EMA50
    double          ema200;        // EMA200
    double          adx;           // ADX-Wert
    bool            adx_trending;  // ADX > threshold (aus config)
+   string          ms_event;      // Marktstruktur-Ereignis: "BoS_Bull", "BoS_Bear", "CHoCH_Bull", "CHoCH_Bear", ""
+   double          ms_bonus;      // Confidence-Bonus durch Marktstruktur (0.0, 0.10, 0.15)
    string          summary;       // z.B. "Long | EMA-Stack ✓ | ADX=28 | HTF Long"
 };
 
@@ -97,16 +100,20 @@ TrendResult AnalyzeTrend(string symbol, AppConfig &cfg)
    TrendResult res;
    res.direction    = TREND_NEUTRAL;
    res.score        = 0;
-   res.max_score    = 5;   // 2 (EMA) + 1 (ADX) + 2 (HTF)
+   res.max_score    = 6;   // 2 (EMA-Stack) + 1 (EMA9-Bonus) + 1 (ADX) + 2 (HTF)
    res.confidence   = 0.0;
+   res.ema9         = 0.0;
    res.ema21        = 0.0;
    res.ema50        = 0.0;
    res.ema200       = 0.0;
    res.adx          = 0.0;
    res.adx_trending = false;
+   res.ms_event     = "";
+   res.ms_bonus     = 0.0;
    res.summary      = "Neutral";
 
    // --- [1] EMA-Stack auf M15 (shift=1: letzte abgeschlossene Kerze) ---
+   res.ema9   = GetEMA(symbol, PERIOD_M15, 9);
    res.ema21  = GetEMA(symbol, PERIOD_M15, 21);
    res.ema50  = GetEMA(symbol, PERIOD_M15, 50);
    res.ema200 = GetEMA(symbol, PERIOD_M15, 200);
@@ -136,6 +143,14 @@ TrendResult AnalyzeTrend(string symbol, AppConfig &cfg)
       else if(short_conds >= 2) ema_score = -1;
    }
    res.score += ema_score;
+
+   // --- [1b] EMA9 Stack-Bonus (Stufe 2c) ---
+   // EMA9 über EMA21 → bullisch kurzfristig → +1 in Trendrichtung
+   if(res.ema9 > 0.0)
+   {
+      if(res.ema9 > res.ema21 && ema_score > 0)  res.score += 1;
+      if(res.ema9 < res.ema21 && ema_score < 0)  res.score -= 1;
+   }
 
    // --- [2] ADX-Filter auf M15 (14 Perioden) ---
    res.adx          = GetADX(symbol, PERIOD_M15, 14);
@@ -168,6 +183,70 @@ TrendResult AnalyzeTrend(string symbol, AppConfig &cfg)
       }
    }
 
+   // --- [4] Marktstruktur: BoS / CHoCH (Stufe 2c) ---
+   // 30-Bar Lookback auf M15, Swing mit 2-Bar Padding
+   {
+      MqlRates ms_rates[];
+      ArraySetAsSeries(ms_rates, true);
+      if(CopyRates(symbol, PERIOD_M15, 1, 32, ms_rates) >= 30)
+      {
+         // Swing High/Low mit 2-Bar Padding
+         double prev_swing_high = 0.0, prev_swing_low  = 0.0;
+         double last_swing_high = 0.0, last_swing_low  = 0.0;
+
+         for(int mi = 2; mi < 29; mi++)
+         {
+            // Swing High: höher als beide Nachbarn (2-Bar Padding)
+            if(ms_rates[mi].high > ms_rates[mi-1].high &&
+               ms_rates[mi].high > ms_rates[mi+1].high &&
+               ms_rates[mi].high > ms_rates[mi-2].high &&
+               ms_rates[mi].high > ms_rates[mi+2].high)
+            {
+               prev_swing_high = last_swing_high;
+               last_swing_high = ms_rates[mi].high;
+            }
+            // Swing Low: tiefer als beide Nachbarn (2-Bar Padding)
+            if(ms_rates[mi].low < ms_rates[mi-1].low &&
+               ms_rates[mi].low < ms_rates[mi+1].low &&
+               ms_rates[mi].low < ms_rates[mi-2].low &&
+               ms_rates[mi].low < ms_rates[mi+2].low)
+            {
+               prev_swing_low = last_swing_low;
+               last_swing_low = ms_rates[mi].low;
+            }
+         }
+
+         double cur_close = ms_rates[0].close;
+
+         // CHoCH (Change of Character) hat Priorität – zeigt Trendwechsel
+         // Bullisch CHoCH: Preis bricht über letztes Swing High in Abwärtstrend
+         if(ema_score <= 0 && last_swing_high > 0.0 && cur_close > last_swing_high)
+         {
+            res.ms_event = "CHoCH_Bull";
+            res.ms_bonus = 0.15;
+         }
+         // Bearisch CHoCH: Preis bricht unter letztes Swing Low in Aufwärtstrend
+         else if(ema_score >= 0 && last_swing_low > 0.0 && cur_close < last_swing_low)
+         {
+            res.ms_event = "CHoCH_Bear";
+            res.ms_bonus = 0.15;
+         }
+         // BoS (Break of Structure) – Fortsetzung des bestehenden Trends
+         // Bullisch BoS: Preis bricht über letztes Swing High in Aufwärtstrend
+         else if(ema_score > 0 && last_swing_high > 0.0 && cur_close > last_swing_high)
+         {
+            res.ms_event = "BoS_Bull";
+            res.ms_bonus = 0.10;
+         }
+         // Bearisch BoS: Preis bricht unter letztes Swing Low in Abwärtstrend
+         else if(ema_score < 0 && last_swing_low > 0.0 && cur_close < last_swing_low)
+         {
+            res.ms_event = "BoS_Bear";
+            res.ms_bonus = 0.10;
+         }
+      }
+   }
+
    // --- Richtungsbestimmung ---
    res.confidence = (double)MathAbs(res.score) / (double)res.max_score;
 
@@ -187,10 +266,12 @@ TrendResult AnalyzeTrend(string symbol, AppConfig &cfg)
                    :                             "✗";
    string adx_mark = res.adx_trending ? "✓" : "✗";
 
-   res.summary = StringFormat("%s | EMA-Stack %s | ADX=%.0f %s | HTF %s | Score=%d/%d | Conf=%.0f%%",
+   string ms_str = (res.ms_event != "") ? " | " + res.ms_event : "";
+   res.summary = StringFormat("%s | EMA-Stack %s | EMA9=%.5f | ADX=%.0f %s | HTF %s%s | Score=%d/%d | Conf=%.0f%%",
                               dir_str, ema_mark,
+                              res.ema9,
                               res.adx, adx_mark,
-                              htf_label,
+                              htf_label, ms_str,
                               res.score, res.max_score,
                               res.confidence * 100.0);
 

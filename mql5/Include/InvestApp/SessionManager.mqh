@@ -207,9 +207,9 @@ bool SetSmartTP(ulong ticket, string symbol, int direction, AppConfig &cfg)
    if(!cfg.smart_tp.enabled) return false;
    if(!PositionSelectByTicket(ticket)) return false;
 
-   int    lookback = cfg.smart_tp.range_candles_lookback;
-   double pip_size = GetPipSize(symbol);
-   double buffer   = cfg.smart_tp.range_buffer_pips * pip_size;
+   int    lookback  = cfg.smart_tp.range_candles_lookback;
+   double pip_size  = GetPipSize(symbol);
+   double buffer    = cfg.smart_tp.range_buffer_pips * pip_size;
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
@@ -227,17 +227,63 @@ bool SetSmartTP(ulong ticket, string symbol, int direction, AppConfig &cfg)
       if(rates[i].low  < range_low)  range_low  = rates[i].low;
    }
 
+   double range_size    = range_high - range_low;
    double current_price = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double entry_price   = PositionGetDouble(POSITION_PRICE_OPEN);
    double current_sl    = PositionGetDouble(POSITION_SL);
    double current_tp    = PositionGetDouble(POSITION_TP);
 
+   // ── Schritt 1: ATR ermitteln für Seitwärtserkennung ──────────────
+   double atr_val = 0.0;
+   if(cfg.smart_tp.sideways_atr_ratio > 0.0)
+   {
+      int atr_handle = iATR(symbol, PERIOD_M5, 14);
+      if(atr_handle != INVALID_HANDLE)
+      {
+         double atr_buf[];
+         ArraySetAsSeries(atr_buf, true);
+         if(CopyBuffer(atr_handle, 0, 1, 1, atr_buf) == 1)
+            atr_val = atr_buf[0];
+         IndicatorRelease(atr_handle);
+      }
+   }
+
+   // ── Schritt 2: Seitwärtserkennung – Range muss < ATR × ratio sein ──
+   if(atr_val > 0.0 && cfg.smart_tp.sideways_atr_ratio > 0.0)
+   {
+      double sideways_threshold = atr_val * cfg.smart_tp.sideways_atr_ratio;
+      if(range_size > sideways_threshold)
+      {
+         LOG_D("SessionManager", symbol,
+               StringFormat("SetSmartTP: Kein Seitwärtsmarkt – Range=%.5f > ATR×%.1f=%.5f → Smart-TP nicht aktiv",
+                            range_size, cfg.smart_tp.sideways_atr_ratio, sideways_threshold));
+         return false;
+      }
+   }
+
+   // ── Schritt 3: Profit-Check – Position muss im Gewinn sein ────────
+   double profit_pips = 0.0;
+   if(direction == 1)
+      profit_pips = (current_price - entry_price) / pip_size;
+   else
+      profit_pips = (entry_price - current_price) / pip_size;
+
+   if(profit_pips < (double)cfg.smart_tp.min_profit_pips)
+   {
+      LOG_D("SessionManager", symbol,
+            StringFormat("SetSmartTP: Zu wenig Profit (%.1f Pips < min %d Pips) → Smart-TP wartet",
+                         profit_pips, cfg.smart_tp.min_profit_pips));
+      return false;
+   }
+
+   // ── Schritt 4: Neuen TP aus Range-High/Low berechnen ─────────────
    double new_tp;
    if(direction == 1)
       new_tp = range_high - buffer;   // Long: knapp unter Range-High
    else
       new_tp = range_low  + buffer;   // Short: knapp über Range-Low
 
-   // Nur setzen wenn TP sinnvoll (in Profitrichtung und besser als bestehender TP)
+   // Nur setzen wenn TP sinnvoll (in Profitrichtung und enger als bestehender TP)
    bool tp_valid;
    if(direction == 1)
       tp_valid = (new_tp > current_price) && (current_tp <= 0.0 || new_tp < current_tp);
@@ -246,8 +292,9 @@ bool SetSmartTP(ulong ticket, string symbol, int direction, AppConfig &cfg)
 
    if(!tp_valid)
    {
-      LOG_D("SessionManager", symbol, StringFormat("SetSmartTP: TP nicht sinnvoll | new_tp=%.5f | current=%.5f",
-            new_tp, current_price));
+      LOG_D("SessionManager", symbol,
+            StringFormat("SetSmartTP: TP-Anpassung nicht sinnvoll | new_tp=%.5f | current=%.5f | existing_tp=%.5f",
+                         new_tp, current_price, current_tp));
       return false;
    }
 
@@ -271,8 +318,10 @@ bool SetSmartTP(ulong ticket, string symbol, int direction, AppConfig &cfg)
    }
 
    LOG_I("SessionManager", symbol,
-         StringFormat("Smart-TP gesetzt auf %.5f (Range-%s=%.5f)",
+         StringFormat("✓ Smart-TP gesetzt auf %.5f | Seitwärtsrange: %.5f–%.5f | Profit: %.1f Pips | Range-%s=%.5f",
                       new_tp,
+                      range_low, range_high,
+                      profit_pips,
                       direction == 1 ? "High" : "Low",
                       direction == 1 ? range_high : range_low));
    return true;

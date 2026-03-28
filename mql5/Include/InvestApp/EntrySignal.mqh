@@ -16,7 +16,7 @@
 enum SIGNAL_TYPE { SIGNAL_NONE = 0, SIGNAL_LONG = 1, SIGNAL_SHORT = -1 };
 enum ENTRY_TYPE  { ENTRY_NONE = 0, ENTRY_PIN_BAR = 1, ENTRY_ENGULFING = 2,
                    ENTRY_RSI_DIVERGENCE = 3, ENTRY_MACD_CROSS = 4, ENTRY_EMA_TOUCH = 5,
-                   ENTRY_BREAKOUT = 6, ENTRY_PULLBACK = 7 };
+                   ENTRY_BREAKOUT = 6, ENTRY_PULLBACK = 7, ENTRY_STOP_HUNT = 8 };
 
 struct SignalResult
 {
@@ -234,6 +234,87 @@ bool _CheckVolume(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Stop-Hunt-Reversal erkennen (Liquidity Sweep)                   |
+//| direction: 1=Long, -1=Short                                      |
+//| Kriterien:                                                        |
+//|   1. Wick unterschreitet Swing-Low (Long) / überschreitet        |
+//|      Swing-High (Short) um 0.1–0.5 ATR                          |
+//|   2. Schlusskurs zurück über/unter das Level                     |
+//|   3. Rejection-Wick ≥ 2× Body ODER Volumen > 1.5× Durchschnitt |
+//+------------------------------------------------------------------+
+bool _IsStopHuntReversal(string symbol, int direction, double atr)
+{
+   if(atr <= 0.0) return false;
+
+   // Letzte Kerze (shift=1, abgeschlossen)
+   MqlRates last_rates[];
+   ArraySetAsSeries(last_rates, true);
+   if(CopyRates(symbol, PERIOD_M15, 1, 1, last_rates) < 1) return false;
+
+   double close = last_rates[0].close;
+   double open_ = last_rates[0].open;
+   double high  = last_rates[0].high;
+   double low   = last_rates[0].low;
+   double body  = MathAbs(close - open_);
+
+   // Swing High/Low der letzten 10 abgeschlossenen Bars (shift 2–11)
+   MqlRates lookback[];
+   ArraySetAsSeries(lookback, true);
+   if(CopyRates(symbol, PERIOD_M15, 2, 10, lookback) < 10) return false;
+
+   double sweep_min = atr * 0.1;
+   double sweep_max = atr * 0.5;
+
+   if(direction == 1) // Long: Sweep unter Swing-Low
+   {
+      double swing_low = lookback[0].low;
+      for(int i = 1; i < 10; i++)
+         if(lookback[i].low < swing_low) swing_low = lookback[i].low;
+
+      double sweep_depth = swing_low - low;
+      if(sweep_depth < sweep_min || sweep_depth > sweep_max) return false;
+      if(close <= swing_low) return false; // Schlusskurs muss zurück über Swing-Low
+
+      // Rejection: Wick >= 2x Body ODER Volumen > 1.5x Durchschnitt
+      double lower_wick = MathMin(open_, close) - low;
+      bool wick_ok = (body > 0.0 && lower_wick / body >= 2.0);
+
+      bool vol_ok = false;
+      long vol_sum = 0;
+      for(int vi = 1; vi <= 20; vi++) vol_sum += iVolume(symbol, PERIOD_M15, vi);
+      long vol_avg = vol_sum / 20;
+      long vol_cur = iVolume(symbol, PERIOD_M15, 1);
+      vol_ok = (vol_avg > 0 && vol_cur > vol_avg * 1.5);
+
+      return (wick_ok || vol_ok);
+   }
+   else if(direction == -1) // Short: Sweep über Swing-High
+   {
+      double swing_high = lookback[0].high;
+      for(int i = 1; i < 10; i++)
+         if(lookback[i].high > swing_high) swing_high = lookback[i].high;
+
+      double sweep_depth = high - swing_high;
+      if(sweep_depth < sweep_min || sweep_depth > sweep_max) return false;
+      if(close >= swing_high) return false; // Schlusskurs muss zurück unter Swing-High
+
+      double upper_wick = high - MathMax(open_, close);
+      bool wick_ok = (body > 0.0 && upper_wick / body >= 2.0);
+
+      bool vol_ok = false;
+      long vol_sum = 0;
+      for(int vi = 1; vi <= 20; vi++) vol_sum += iVolume(symbol, PERIOD_M15, vi);
+      long vol_avg = vol_sum / 20;
+      long vol_cur = iVolume(symbol, PERIOD_M15, 1);
+      vol_ok = (vol_avg > 0 && vol_cur > vol_avg * 1.5);
+
+      return (wick_ok || vol_ok);
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Hauptfunktion: Signal berechnen                                  |
 //+------------------------------------------------------------------+
 SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, AppConfig &cfg)
@@ -359,8 +440,13 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
             is_breakout = true;
       }
 
-      // --- Pullback (nur wenn kein Breakout) ---
-      if(!is_breakout)
+      // --- Stop-Hunt-Reversal (nur wenn kein Breakout) ---
+      bool is_stop_hunt = false;
+      if(!is_breakout && _IsStopHuntReversal(symbol, direction, atr_val))
+         is_stop_hunt = true;
+
+      // --- Pullback (nur wenn kein Breakout und kein Stop-Hunt) ---
+      if(!is_breakout && !is_stop_hunt)
       {
          // 20-Bar Swing High/Low auf M15
          MqlRates swing_rates[];
@@ -402,7 +488,7 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       }
    }
 
-   // --- [8] Breakout/Pullback Confidence-Anpassung ---
+   // --- [8] Breakout/Stop-Hunt/Pullback Confidence-Anpassung ---
    if(is_breakout)
    {
       result.confidence += 0.10;
@@ -418,6 +504,13 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
                StringFormat("Breakout ohne Volumenbestätigung – Conf reduziert auf %.2f",
                             result.confidence));
       }
+   }
+   else if(is_stop_hunt)
+   {
+      result.confidence += 0.12;
+      result.entry_type  = ENTRY_STOP_HUNT;
+      LOG_I("EntrySignal", symbol,
+            StringFormat("Stop-Hunt-Reversal erkannt | Conf=%.2f", result.confidence));
    }
    else if(is_pullback)
    {
@@ -463,8 +556,9 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       case ENTRY_RSI_DIVERGENCE:  type_str = "RSI-Div";     break;
       case ENTRY_MACD_CROSS:      type_str = "MACD-Cross";  break;
       case ENTRY_EMA_TOUCH:       type_str = "EMA-Touch";   break;
-      case ENTRY_BREAKOUT:        type_str = "Breakout";    break;
+      case ENTRY_BREAKOUT:        type_str = "Breakout";       break;
       case ENTRY_PULLBACK:        type_str = StringFormat("Pullback(Fib=%.3f)", result.fib_level); break;
+      case ENTRY_STOP_HUNT:       type_str = "StopHunt";       break;
       default:                    type_str = "Mixed";        break;
    }
 

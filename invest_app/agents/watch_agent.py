@@ -93,8 +93,22 @@ class WatchAgent:
             with self._lock:
                 pending_snapshot = list(self._pending_signals)
             # Statistik aus OrderDB ableiten wenn verfügbar
+            # watched_symbols = alle vom System überwachten Symbole (nicht nur ausstehende Signale)
+            pending_instruments = {s.get("instrument", "") for s in pending_snapshot}
+            if self.chart_exporter is not None and hasattr(self.chart_exporter, "get_all_symbols"):
+                all_syms = self.chart_exporter.get_all_symbols()
+                _watched_count = len(all_syms) if all_syms else len(pending_instruments)
+            elif self._config is not None:
+                _cfg_syms = (
+                    getattr(self._config, "all_symbols", None)
+                    or getattr(self._config, "fallback_symbols", None)
+                    or []
+                )
+                _watched_count = len(_cfg_syms) if _cfg_syms else len(pending_instruments)
+            else:
+                _watched_count = len(pending_instruments)
             stats: dict = {
-                "watched_symbols": len({s.get("instrument", "") for s in pending_snapshot}),
+                "watched_symbols": _watched_count,
                 "trades_today": 0,
                 "pnl_today": 0.0,
             }

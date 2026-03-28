@@ -16,6 +16,8 @@ struct RiskConfig
    int    max_open_trades;       // Standard: 3
    double max_daily_drawdown_pct;// Standard: 3.0
    double min_rr_ratio;          // Standard: 2.0
+   double forex_max_sl_pips;     // Forex: maximaler SL in Pips (Standard: 80)
+   double max_exposure_pct;      // Maximales Gesamt-Risiko aller offenen Trades (Standard: 0.03 = 3%)
 };
 
 struct FiltersConfig
@@ -68,6 +70,8 @@ struct SmartTpConfig
    int    activate_minutes_before_rollover; // Standard: 60
    int    range_candles_lookback;           // Standard: 12
    int    range_buffer_pips;                // Standard: 2
+   double sideways_atr_ratio;              // Standard: 0.5 – Range < ATR*ratio = Seitwärtsmarkt
+   int    min_profit_pips;                 // Standard: 5  – Mindestgewinn bevor Smart-TP greift
 };
 
 struct AppConfig
@@ -219,6 +223,8 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.risk.max_open_trades        = 3;
    cfg.risk.max_daily_drawdown_pct = 3.0;
    cfg.risk.min_rr_ratio           = 2.0;
+   cfg.risk.forex_max_sl_pips      = 80.0;
+   cfg.risk.max_exposure_pct       = 0.03;
 
    cfg.filters.min_atr_multiplier  = 0.5;
    cfg.filters.max_atr_multiplier  = 2.0;
@@ -253,6 +259,8 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.smart_tp.activate_minutes_before_rollover = 60;
    cfg.smart_tp.range_candles_lookback           = 12;
    cfg.smart_tp.range_buffer_pips                = 2;
+   cfg.smart_tp.sideways_atr_ratio               = 0.5;
+   cfg.smart_tp.min_profit_pips                  = 5;
 
    cfg.last_updated = "";
    cfg.version      = "0.0";
@@ -275,6 +283,8 @@ void _ParseConfig(string json, AppConfig &cfg)
       cfg.risk.max_open_trades        = _JsonGetInt   (sec, "max_open_trades",        cfg.risk.max_open_trades);
       cfg.risk.max_daily_drawdown_pct = _JsonGetDouble(sec, "max_daily_drawdown_pct", cfg.risk.max_daily_drawdown_pct);
       cfg.risk.min_rr_ratio           = _JsonGetDouble(sec, "min_rr_ratio",           cfg.risk.min_rr_ratio);
+      cfg.risk.forex_max_sl_pips      = _JsonGetDouble(sec, "forex_max_sl_pips",      cfg.risk.forex_max_sl_pips);
+      cfg.risk.max_exposure_pct       = _JsonGetDouble(sec, "max_exposure_pct",       cfg.risk.max_exposure_pct);
    }
 
    // Abschnitt "filters"
@@ -335,10 +345,12 @@ void _ParseConfig(string json, AppConfig &cfg)
    sec = _JsonGetSection(json, "smart_tp");
    if(sec != "")
    {
-      cfg.smart_tp.enabled                          = _JsonGetBool(sec, "enabled",                          cfg.smart_tp.enabled);
-      cfg.smart_tp.activate_minutes_before_rollover = _JsonGetInt (sec, "activate_minutes_before_rollover", cfg.smart_tp.activate_minutes_before_rollover);
-      cfg.smart_tp.range_candles_lookback           = _JsonGetInt (sec, "range_candles_lookback",           cfg.smart_tp.range_candles_lookback);
-      cfg.smart_tp.range_buffer_pips                = _JsonGetInt (sec, "range_buffer_pips",                cfg.smart_tp.range_buffer_pips);
+      cfg.smart_tp.enabled                          = _JsonGetBool  (sec, "enabled",                          cfg.smart_tp.enabled);
+      cfg.smart_tp.activate_minutes_before_rollover = _JsonGetInt   (sec, "activate_minutes_before_rollover", cfg.smart_tp.activate_minutes_before_rollover);
+      cfg.smart_tp.range_candles_lookback           = _JsonGetInt   (sec, "range_candles_lookback",           cfg.smart_tp.range_candles_lookback);
+      cfg.smart_tp.range_buffer_pips                = _JsonGetInt   (sec, "range_buffer_pips",                cfg.smart_tp.range_buffer_pips);
+      cfg.smart_tp.sideways_atr_ratio               = _JsonGetDouble(sec, "sideways_atr_ratio",               cfg.smart_tp.sideways_atr_ratio);
+      cfg.smart_tp.min_profit_pips                  = _JsonGetInt   (sec, "min_profit_pips",                  cfg.smart_tp.min_profit_pips);
    }
 }
 

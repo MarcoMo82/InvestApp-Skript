@@ -70,6 +70,68 @@ double GetATR(string symbol, ENUM_TIMEFRAMES tf, int period, int shift = 1)
 }
 
 //+------------------------------------------------------------------+
+//| Technischen Swing-SL berechnen (letzten 5 Bars)                 |
+//| Long:  Swing-Low  − Buffer (0.02% des Entry-Preises)            |
+//| Short: Swing-High + Buffer                                       |
+//| Gibt 0.0 zurück wenn nicht genug Daten                          |
+//+------------------------------------------------------------------+
+double _GetSwingSL(string symbol, int direction, double entry_price)
+{
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   // Letzte 5 abgeschlossene Kerzen (shift 1–5)
+   if(CopyRates(symbol, PERIOD_M15, 1, 5, rates) < 5) return 0.0;
+
+   double buffer = entry_price * 0.0002; // 0.02%-Puffer wie Python
+
+   if(direction == 1) // Long: Swing-Low
+   {
+      double swing_low = rates[0].low;
+      for(int i = 1; i < 5; i++)
+         if(rates[i].low < swing_low) swing_low = rates[i].low;
+      return swing_low - buffer;
+   }
+   else // Short: Swing-High
+   {
+      double swing_high = rates[0].high;
+      for(int i = 1; i < 5; i++)
+         if(rates[i].high > swing_high) swing_high = rates[i].high;
+      return swing_high + buffer;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| SL-Preis von runden xx00/x000-Pip-Niveaus wegverschieben        |
+//| Falls SL innerhalb von 10 Pips einer runden Marke liegt:        |
+//| Long:  SL wird 10 Pips unter die runde Marke gesetzt            |
+//| Short: SL wird 10 Pips über die runde Marke gesetzt             |
+//+------------------------------------------------------------------+
+double _AdjustSLForRoundNumbers(double sl, int direction, double pip_size)
+{
+   double pips_10 = 10.0 * pip_size;
+
+   // Prüfe x000- und xx00-Niveaus (Faktor 1000 und 100 Pips)
+   double factors[2];
+   factors[0] = pip_size * 1000.0;
+   factors[1] = pip_size * 100.0;
+
+   for(int fi = 0; fi < 2; fi++)
+   {
+      double factor  = factors[fi];
+      double rounded = MathRound(sl / factor) * factor;
+      if(MathAbs(sl - rounded) <= pips_10)
+      {
+         if(direction == 1)       // Long: SL weiter unten (schlechter)
+            sl = rounded - pips_10;
+         else                     // Short: SL weiter oben (schlechter)
+            sl = rounded + pips_10;
+         break;
+      }
+   }
+   return sl;
+}
+
+//+------------------------------------------------------------------+
 //| Risiko berechnen – Hauptfunktion                                 |
 //| direction: 1=Long, -1=Short                                      |
 //+------------------------------------------------------------------+
@@ -102,21 +164,70 @@ RiskResult CalculateRisk(string symbol, int direction, double entry_price, AppCo
       return res;
    }
 
-   // SL-Abstand in Preis
-   double sl_distance = atr * cfg.entry.sl_atr_multiplier;
+   // --- ATR-basierter SL ---
+   double sl_distance_atr = atr * cfg.entry.sl_atr_multiplier;
+   double sl_atr = (direction == 1)
+                   ? entry_price - sl_distance_atr
+                   : entry_price + sl_distance_atr;
 
-   // Absoluter SL-Preis
-   if(direction == 1)        // Long
-      res.sl_price = entry_price - sl_distance;
-   else                      // Short
-      res.sl_price = entry_price + sl_distance;
+   // --- Swing-SL (technisch, letzten 5 Bars) ---
+   double sl_swing = _GetSwingSL(symbol, direction, entry_price);
+
+   // Konservativeren (weiteren) SL verwenden
+   double sl_final = sl_atr;
+   if(sl_swing != 0.0)
+   {
+      if(direction == 1)
+      {
+         // Long: der niedrigere SL (weiter vom Entry) ist konservativer
+         if(sl_swing < sl_atr)
+         {
+            sl_final = sl_swing;
+            LOG_I("RiskManager", symbol,
+                  StringFormat("Swing-SL %.5f < ATR-SL %.5f → Swing-SL verwendet",
+                               sl_swing, sl_atr));
+         }
+      }
+      else
+      {
+         // Short: der höhere SL (weiter vom Entry) ist konservativer
+         if(sl_swing > sl_atr)
+         {
+            sl_final = sl_swing;
+            LOG_I("RiskManager", symbol,
+                  StringFormat("Swing-SL %.5f > ATR-SL %.5f → Swing-SL verwendet",
+                               sl_swing, sl_atr));
+         }
+      }
+   }
+
+   // --- Runde-Zahlen-Schutz anwenden ---
+   sl_final = _AdjustSLForRoundNumbers(sl_final, direction, pip_size);
+
+   res.sl_price = sl_final;
 
    // SL in Pips
+   double sl_distance = MathAbs(entry_price - sl_final);
    res.sl_pips = sl_distance / pip_size;
    if(res.sl_pips <= 0.0)
    {
       res.reject_reason = "SL-Pips <= 0";
       return res;
+   }
+
+   // --- Forex Max-SL-Pips Schutz ---
+   // Gilt nur für Forex (4–5 Dezimalstellen, Pip-Größe = 0.0001 oder 0.01)
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   if(digits >= 3 && cfg.risk.forex_max_sl_pips > 0.0)
+   {
+      if(res.sl_pips > cfg.risk.forex_max_sl_pips)
+      {
+         res.reject_reason = StringFormat(
+            "SL %.1f Pips > Forex-Limit %.1f Pips",
+            res.sl_pips, cfg.risk.forex_max_sl_pips);
+         LOG_W("RiskManager", symbol, res.reject_reason);
+         return res;
+      }
    }
 
    // Pip-Wert pro Lot berechnen
@@ -158,6 +269,50 @@ RiskResult CalculateRisk(string symbol, int direction, double entry_price, AppCo
       return res;
    }
    res.lots = lots_norm;
+
+   // --- Max-Exposure Schutz (alle offenen Positionen) ---
+   if(cfg.risk.max_exposure_pct > 0.0)
+   {
+      double equity         = AccountInfoDouble(ACCOUNT_EQUITY);
+      double total_exposure = 0.0;
+      int    pos_total      = PositionsTotal();
+      for(int pi = 0; pi < pos_total; pi++)
+      {
+         ulong ticket = PositionGetTicket(pi);
+         if(ticket == 0) continue;
+         double pos_sl    = PositionGetDouble(POSITION_SL);
+         double pos_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         double pos_lots  = PositionGetDouble(POSITION_VOLUME);
+         if(pos_sl > 0.0 && equity > 0.0)
+         {
+            string pos_sym = PositionGetString(POSITION_SYMBOL);
+            double pos_pip = GetPipSize(pos_sym);
+            double pos_risk_pips = MathAbs(pos_price - pos_sl) / (pos_pip > 0.0 ? pos_pip : pip_size);
+            double tv = SymbolInfoDouble(pos_sym, SYMBOL_TRADE_TICK_VALUE);
+            double ts = SymbolInfoDouble(pos_sym, SYMBOL_TRADE_TICK_SIZE);
+            if(ts > 0.0 && tv > 0.0)
+            {
+               double pvpl           = (tv / ts) * (pos_pip > 0.0 ? pos_pip : pip_size);
+               double pos_risk_money = pos_risk_pips * pvpl * pos_lots;
+               total_exposure       += pos_risk_money / equity;
+            }
+         }
+      }
+      double new_risk_pct = (equity > 0.0)
+                            ? (res.sl_pips * pip_value_per_lot * lots_norm) / equity
+                            : 0.0;
+      if(total_exposure + new_risk_pct > cfg.risk.max_exposure_pct)
+      {
+         res.reject_reason = StringFormat(
+            "Max-Exposure %.1f%% überschritten (offen=%.1f%% + neu=%.1f%% > Limit=%.1f%%)",
+            cfg.risk.max_exposure_pct * 100.0,
+            total_exposure * 100.0,
+            new_risk_pct * 100.0,
+            cfg.risk.max_exposure_pct * 100.0);
+         LOG_W("RiskManager", symbol, res.reject_reason);
+         return res;
+      }
+   }
 
    // TP berechnen
    if(cfg.trade_exit.use_fixed_tp)

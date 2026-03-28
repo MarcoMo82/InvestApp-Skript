@@ -208,8 +208,20 @@ void AnalyzeSymbol(string symbol)
       return;
    }
 
-   // [5b] SMC Confluence Bonus
+   // [5b] Confidence-Modifikatoren + 80%-Gate
    {
+      // BB-Modifier (Squeeze oder Walk)
+      signal.confidence *= vol.bb_modifier;
+
+      // Marktstruktur-Bonus (BoS / CHoCH)
+      if(trend.ms_bonus > 0.0)
+      {
+         signal.confidence += trend.ms_bonus;
+         LOG_I(EA_NAME, symbol, StringFormat("Marktstruktur %s +%.0f%% | Conf=%.0f%%",
+               trend.ms_event, trend.ms_bonus*100, signal.confidence*100));
+      }
+
+      // SMC Confluence Bonus (FVG + Order Blocks)
       double atr_val = GetATR(symbol, PERIOD_M15, 14, 1);
       FairValueGap fvgs[];
       OrderBlock   obs[];
@@ -219,8 +231,26 @@ void AnalyzeSymbol(string symbol)
       if(smc_bonus > 0.0)
       {
          signal.confidence += smc_bonus;
-         LOG_I(EA_NAME, symbol, StringFormat("SMC Confluence Bonus +%.0f%% | Confidence: %.0f%%",
+         LOG_I(EA_NAME, symbol, StringFormat("SMC Bonus +%.0f%% | Conf=%.0f%%",
                smc_bonus*100, signal.confidence*100));
+      }
+
+      // Session-Overlap Bonus
+      if(vol.session_bonus > 0.0)
+      {
+         signal.confidence += vol.session_bonus;
+         LOG_I(EA_NAME, symbol, StringFormat("Session Bonus +%.0f%% | Conf=%.0f%%",
+               vol.session_bonus*100, signal.confidence*100));
+      }
+
+      signal.confidence = MathMax(0.0, MathMin(1.0, signal.confidence));
+
+      // 80% Confidence-Gate (Top-Signal-Schwelle)
+      if(signal.confidence < 0.80)
+      {
+         LOG_W(EA_NAME, symbol, StringFormat("Order blocked: Confidence %.0f%% < 80%%",
+               signal.confidence * 100.0));
+         return;
       }
    }
 
