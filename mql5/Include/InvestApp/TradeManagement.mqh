@@ -159,7 +159,7 @@ void ManageTrades(string &symbols[], int count, AppConfig &cfg)
          double be_trigger_pips = cfg.trade_management.breakeven_trigger_atr * (atr / pip_size);
          if(profit_pips >= be_trigger_pips)
          {
-            double buffer = cfg.trade_management.breakeven_buffer_pips * pip_size;
+            double buffer = atr * 0.25;
             double new_sl = (direction == 1) ? entry_price + buffer : entry_price - buffer;
 
             bool sl_improved = (direction == 1) ? (new_sl > current_sl) : (new_sl < current_sl || current_sl <= 0.0);

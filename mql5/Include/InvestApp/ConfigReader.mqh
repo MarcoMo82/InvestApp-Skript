@@ -15,13 +15,13 @@ struct RiskConfig
    double risk_per_trade_pct;    // Standard: 1.0
    int    max_open_trades;       // Standard: 3
    double max_daily_drawdown_pct;// Standard: 3.0
-   double min_rr_ratio;          // Standard: 1.5
+   double min_rr_ratio;          // Standard: 2.0
 };
 
 struct FiltersConfig
 {
-   double min_atr_multiplier;    // Standard: 0.8
-   double max_atr_multiplier;    // Standard: 2.5
+   double min_atr_multiplier;    // Standard: 0.5
+   double max_atr_multiplier;    // Standard: 2.0
    double max_spread_pips;       // Standard: 2.0
    int    adx_min_threshold;     // Standard: 20
    int    rsi_overbought;        // Standard: 70
@@ -31,7 +31,7 @@ struct FiltersConfig
 
 struct EntryConfig
 {
-   double sl_atr_multiplier;           // Standard: 1.5
+   double sl_atr_multiplier;           // Standard: 2.0
    double tp_rr_ratio;                 // Standard: 2.0
    double signal_confidence_threshold; // Standard: 0.65
 };
@@ -218,17 +218,17 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.risk.risk_per_trade_pct     = 1.0;
    cfg.risk.max_open_trades        = 3;
    cfg.risk.max_daily_drawdown_pct = 3.0;
-   cfg.risk.min_rr_ratio           = 1.5;
+   cfg.risk.min_rr_ratio           = 2.0;
 
-   cfg.filters.min_atr_multiplier  = 0.8;
-   cfg.filters.max_atr_multiplier  = 2.5;
+   cfg.filters.min_atr_multiplier  = 0.5;
+   cfg.filters.max_atr_multiplier  = 2.0;
    cfg.filters.max_spread_pips     = 2.0;
    cfg.filters.adx_min_threshold   = 20;
    cfg.filters.rsi_overbought      = 70;
    cfg.filters.rsi_oversold        = 30;
    cfg.filters.bypass_session_filter = false;
 
-   cfg.entry.sl_atr_multiplier            = 1.5;
+   cfg.entry.sl_atr_multiplier            = 2.0;
    cfg.entry.tp_rr_ratio                  = 2.0;
    cfg.entry.signal_confidence_threshold  = 0.65;
 
