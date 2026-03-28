@@ -208,35 +208,19 @@ void AnalyzeSymbol(string symbol)
       return;
    }
 
-   // [5a] SMC Confluence Bonus (FVG + Order Block)
+   // [5b] SMC Confluence Bonus
    {
-      int    smc_atr_handle = iATR(symbol, PERIOD_M15, 14);
-      double smc_atr_val    = 0.0;
-      if(smc_atr_handle != INVALID_HANDLE)
+      double atr_val = GetATR(symbol, PERIOD_M15, 14, 1);
+      FairValueGap fvgs[];
+      OrderBlock   obs[];
+      int fvg_n = DetectFVGs(symbol, PERIOD_M15, fvgs, atr_val);
+      int ob_n  = DetectOrderBlocks(symbol, PERIOD_M15, obs, atr_val);
+      double smc_bonus = CalcSMCBonus(signal.entry_price, fvgs, fvg_n, obs, ob_n, atr_val);
+      if(smc_bonus > 0.0)
       {
-         double atr_buf[];
-         ArraySetAsSeries(atr_buf, true);
-         if(CopyBuffer(smc_atr_handle, 0, 1, 1, atr_buf) > 0)
-            smc_atr_val = atr_buf[0];
-         IndicatorRelease(smc_atr_handle);
-      }
-      if(smc_atr_val > 0.0)
-      {
-         FairValueGap fvgs[];
-         OrderBlock   obs[];
-         int fvg_count  = DetectFVGs(symbol, PERIOD_M15, fvgs, smc_atr_val);
-         int ob_count   = DetectOrderBlocks(symbol, PERIOD_M15, obs, smc_atr_val);
-         double smc_bonus = CalcSMCBonus(signal.entry_price, fvgs, fvg_count,
-                                         obs, ob_count, smc_atr_val);
-         if(smc_bonus > 0.0)
-         {
-            string bonus_type = (smc_bonus >= 0.20) ? "FVG+OB"
-                              : (smc_bonus >= 0.15)  ? "OB" : "FVG";
-            signal.confidence = MathMin(1.0, signal.confidence + smc_bonus);
-            Print("SMC Confluence: ", bonus_type, " Bonus +",
-                  DoubleToString(smc_bonus * 100.0, 0), "% | Total Confidence: ",
-                  DoubleToString(signal.confidence * 100.0, 1), "%");
-         }
+         signal.confidence += smc_bonus;
+         LOG_I(EA_NAME, symbol, StringFormat("SMC Confluence Bonus +%.0f%% | Confidence: %.0f%%",
+               smc_bonus*100, signal.confidence*100));
       }
    }
 
