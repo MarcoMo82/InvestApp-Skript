@@ -264,7 +264,7 @@
     "_comment": "MQL5 ConfigReader – Handelssessions (Singular-Key, Singular erwartet von ConfigReader.mqh)",
     "trade_london": true,
     "trade_new_york": true,
-    "trade_asian": false
+    "trade_asian": true
   },
   "trade_management": {
     "_comment": "Breakeven + Trailing werden vollständig vom MQL5 EA verwaltet. Python liest nur Status.",
