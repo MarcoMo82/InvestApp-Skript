@@ -255,12 +255,13 @@ RiskResult CalculateRisk(string symbol, int direction, double entry_price, AppCo
    lots_norm = MathMax(vol_min, MathMin(vol_max, lots_norm));
    lots_norm = NormalizeDouble(lots_norm, 2);
 
-   // Max-Lots-Grenze
-   if(lots_norm > 2.0)
+   // Max-Lots-Grenze (Hard-Cap aus config.json → cfg.risk.max_lot)
+   if(lots_norm > cfg.risk.max_lot)
    {
       LOG_W("RiskManager", symbol,
-            StringFormat("Lots %.2f > 2.0 – wird auf 2.0 gekappt", lots_norm));
-      lots_norm = 2.0;
+            StringFormat("Lots %.2f > max_lot %.2f – wird auf %.2f gekappt",
+                         lots_norm, cfg.risk.max_lot, cfg.risk.max_lot));
+      lots_norm = cfg.risk.max_lot;
    }
 
    if(lots_norm < vol_min)
@@ -353,6 +354,38 @@ RiskResult CalculateRisk(string symbol, int direction, double entry_price, AppCo
                       res.lots, res.sl_price, res.sl_pips, tp_info, res.atr_value));
 
    return res;
+}
+
+//+------------------------------------------------------------------+
+//| Prüfen ob gegenläufige Position auf demselben Symbol offen ist  |
+//| direction: 1=Long, -1=Short                                      |
+//| Gibt true zurück wenn eine Gegenposition existiert               |
+//+------------------------------------------------------------------+
+bool HasOpposingPosition(string symbol, int direction)
+{
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+
+      string pos_symbol = PositionGetString(POSITION_SYMBOL);
+      if(pos_symbol != symbol) continue;
+
+      long pos_type = PositionGetInteger(POSITION_TYPE);
+      // POSITION_TYPE_BUY = 0 (Long), POSITION_TYPE_SELL = 1 (Short)
+      bool pos_is_long  = (pos_type == POSITION_TYPE_BUY);
+      bool new_is_long  = (direction == 1);
+
+      if(pos_is_long != new_is_long) // entgegengesetzte Richtung
+      {
+         LOG_W("RiskManager", symbol,
+               StringFormat("Gegenläufige Position gefunden (Ticket=%I64u, Typ=%s) – Signal verworfen",
+                            ticket, pos_is_long ? "Long" : "Short"));
+         return true;
+      }
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+

@@ -267,6 +267,12 @@ def main() -> None:
     # Initialen Scanner-Lauf: MT5-Symbole laden und active_symbols setzen
     orchestrator._run_scanner()
 
+    # Startup-Sync: Bestehende MT5-Positionen in Order-DB laden
+    from agents.startup_sync import sync_from_connector
+    synced = sync_from_connector(order_db, connector)
+    if synced > 0:
+        logger.info(f"[Startup] {synced} MT5-Position(en) in Order-DB synchronisiert")
+
     # Startup-Banner
     active = orchestrator.active_symbols or config.all_symbols
     if getattr(config, "show_startup_banner", True):

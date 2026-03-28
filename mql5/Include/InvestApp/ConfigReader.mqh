@@ -18,6 +18,7 @@ struct RiskConfig
    double min_rr_ratio;          // Standard: 2.0
    double forex_max_sl_pips;     // Forex: maximaler SL in Pips (Standard: 80)
    double max_exposure_pct;      // Maximales Gesamt-Risiko aller offenen Trades (Standard: 0.03 = 3%)
+   double max_lot;               // Hard-Cap für Lotgröße (Standard: 2.0)
 };
 
 struct FiltersConfig
@@ -225,6 +226,7 @@ void _SetConfigDefaults(AppConfig &cfg)
    cfg.risk.min_rr_ratio           = 2.0;
    cfg.risk.forex_max_sl_pips      = 80.0;
    cfg.risk.max_exposure_pct       = 0.03;
+   cfg.risk.max_lot                = 2.0;
 
    cfg.filters.min_atr_multiplier  = 0.5;
    cfg.filters.max_atr_multiplier  = 2.0;
@@ -285,6 +287,7 @@ void _ParseConfig(string json, AppConfig &cfg)
       cfg.risk.min_rr_ratio           = _JsonGetDouble(sec, "min_rr_ratio",           cfg.risk.min_rr_ratio);
       cfg.risk.forex_max_sl_pips      = _JsonGetDouble(sec, "forex_max_sl_pips",      cfg.risk.forex_max_sl_pips);
       cfg.risk.max_exposure_pct       = _JsonGetDouble(sec, "max_exposure_pct",       cfg.risk.max_exposure_pct);
+      cfg.risk.max_lot                = _JsonGetDouble(sec, "max_lot",                cfg.risk.max_lot);
    }
 
    // Abschnitt "filters"

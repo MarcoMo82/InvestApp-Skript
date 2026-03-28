@@ -73,6 +73,7 @@
     "forex_max_sl_pips": 80,
     "stock_max_sl_pct": 0.03,
     "swing_sl_buffer_pct": 0.0002,
+    "max_lot": 2.0,
     "max_orders_per_symbol": 2,
     "spread_filter_multiplier": 3.0,
     "normal_spread_pips": {

@@ -38,7 +38,11 @@ class RiskAgent(BaseAgent):
             self.min_crv = min_crv
             self.risk_per_trade = risk_per_trade
         self.min_lot = min_lot
-        self.max_lot = max_lot
+        # max_lot aus config lesen; Fallback auf Konstruktor-Parameter
+        if config is not None:
+            self.max_lot = getattr(config, "max_lot", max_lot)
+        else:
+            self.max_lot = max_lot
         self._config = config
 
     def calculate(
@@ -103,6 +107,14 @@ class RiskAgent(BaseAgent):
         entry_price = self._require_field(data, "entry_price")
         atr = self._require_field(data, "atr_value")
         balance = data.get("account_balance", 10000.0)
+
+        # Feature 3: Gegenläufige Position prüfen
+        open_orders = data.get("open_orders", [])
+        if open_orders and self.has_opposing_position(symbol, direction, open_orders):
+            return self._rejected(
+                symbol,
+                f"Gegenläufige Position offen auf {symbol}"
+            )
 
         # P1.1: Max. offene Positionen prüfen
         open_positions = data.get("open_positions", 0)
@@ -235,7 +247,16 @@ class RiskAgent(BaseAgent):
             return self.min_lot
 
         lot = risk_amount / (sl_pips * pip_value)
-        lot = max(self.min_lot, min(self.max_lot, lot))
+
+        # max_lot Hard-Cap – kritische Sicherheitsgrenze
+        if lot > self.max_lot:
+            self.logger.warning(
+                f"[RiskAgent] Berechnete Lotgröße {lot:.2f} überschreitet max_lot {self.max_lot:.2f} "
+                f"– wird auf {self.max_lot:.2f} gekappt"
+            )
+            lot = self.max_lot
+
+        lot = max(self.min_lot, lot)
 
         # Auf 2 Dezimalstellen runden (Standard-Lot-Schrittweite)
         return round(lot, 2)
@@ -407,6 +428,27 @@ class RiskAgent(BaseAgent):
                         and highs[i] > highs[i + 1] and highs[i] > highs[i + 2]):
                     return float(highs[i])
         return None
+
+    @staticmethod
+    def has_opposing_position(symbol: str, direction: str, open_orders: list) -> bool:
+        """
+        Prüft ob eine gegenläufige Position auf demselben Symbol offen ist.
+
+        Args:
+            symbol: Symbol (z. B. 'EURUSD')
+            direction: Neue Trade-Richtung ('long' oder 'short')
+            open_orders: Liste offener Orders aus order_db.get_open_orders()
+
+        Returns:
+            True wenn eine gegenläufige Position offen ist.
+        """
+        opposing = "short" if direction == "long" else "long"
+        for order in open_orders:
+            if (order.get("symbol") == symbol
+                    and order.get("direction") == opposing
+                    and order.get("status") in ("open", "pending")):
+                return True
+        return False
 
     @staticmethod
     def _rejected(symbol: str, reason: str) -> dict:
