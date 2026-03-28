@@ -14,7 +14,8 @@
 //+------------------------------------------------------------------+
 enum SIGNAL_TYPE { SIGNAL_NONE = 0, SIGNAL_LONG = 1, SIGNAL_SHORT = -1 };
 enum ENTRY_TYPE  { ENTRY_NONE = 0, ENTRY_PIN_BAR = 1, ENTRY_ENGULFING = 2,
-                   ENTRY_RSI_DIVERGENCE = 3, ENTRY_MACD_CROSS = 4, ENTRY_EMA_TOUCH = 5 };
+                   ENTRY_RSI_DIVERGENCE = 3, ENTRY_MACD_CROSS = 4, ENTRY_EMA_TOUCH = 5,
+                   ENTRY_BREAKOUT = 6, ENTRY_PULLBACK = 7 };
 
 struct SignalResult
 {
@@ -161,6 +162,25 @@ bool _GetMACD(string symbol, int shift, double &macd_val, double &signal_val)
 }
 
 //+------------------------------------------------------------------+
+//| ATR-Hilfsfunktion (lokal, um RiskManager-Abhängigkeit zu        |
+//| vermeiden)                                                       |
+//+------------------------------------------------------------------+
+double _GetATRLocal(string symbol, ENUM_TIMEFRAMES tf, int period, int shift = 1)
+{
+   int handle = iATR(symbol, tf, period);
+   if(handle == INVALID_HANDLE) return 0.0;
+   double buf[];
+   ArraySetAsSeries(buf, true);
+   if(CopyBuffer(handle, 0, shift, 1, buf) <= 0)
+   {
+      IndicatorRelease(handle);
+      return 0.0;
+   }
+   IndicatorRelease(handle);
+   return buf[0];
+}
+
+//+------------------------------------------------------------------+
 //| EMA-Touch prüfen: Preis berührt EMA21 in letzten 2 Kerzen       |
 //+------------------------------------------------------------------+
 bool _IsEMATouch(string symbol, int direction)
@@ -284,11 +304,139 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
          score -= 1;
    }
 
+   // --- [7] Breakout-Entry Erkennung ---
+   bool   breakout_detected = false;
+   double breakout_level    = 0.0;
+   double breakout_dist     = 0.0;
+   double atr_val = _GetATRLocal(symbol, PERIOD_M15, 14, 1);
+
+   if(atr_val > 0.0)
+   {
+      MqlRates bk_rates[];
+      if(_GetCandles(symbol, PERIOD_M15, 3, bk_rates))
+      {
+         double cur_close = bk_rates[1].close;
+         double pip       = _LDGetPipSize(symbol);
+
+         if(direction == 1 && zones.resistance_count > 0)
+         {
+            for(int i = 0; i < zones.resistance_count; i++)
+            {
+               double lvl = zones.resistance[i];
+               if(cur_close > lvl && (cur_close - lvl) > atr_val * 0.3)
+               {
+                  breakout_detected = true;
+                  breakout_level    = lvl;
+                  breakout_dist     = (pip > 0.0) ? (cur_close - lvl) / pip : 0.0;
+                  break;
+               }
+            }
+         }
+         else if(direction == -1 && zones.support_count > 0)
+         {
+            for(int i = 0; i < zones.support_count; i++)
+            {
+               double lvl = zones.support[i];
+               if(cur_close < lvl && (lvl - cur_close) > atr_val * 0.3)
+               {
+                  breakout_detected = true;
+                  breakout_level    = lvl;
+                  breakout_dist     = (pip > 0.0) ? (lvl - cur_close) / pip : 0.0;
+                  break;
+               }
+            }
+         }
+      }
+   }
+
+   // --- [8] Volumen-Bestätigung (für Breakout) ---
+   bool   vol_confirmed = false;
+   double vol_ratio     = 0.0;
+   if(breakout_detected)
+   {
+      long vol_buf[];
+      ArraySetAsSeries(vol_buf, true);
+      if(CopyTickVolume(symbol, PERIOD_M15, 1, 21, vol_buf) >= 21)
+      {
+         long vol_cur = vol_buf[0];
+         long vol_sum = 0;
+         for(int vi = 1; vi <= 20; vi++)
+            vol_sum += vol_buf[vi];
+         double avg_vol = (vol_sum > 0) ? (double)vol_sum / 20.0 : 0.0;
+         if(avg_vol > 0.0)
+         {
+            vol_ratio     = (double)vol_cur / avg_vol;
+            vol_confirmed = (vol_ratio >= 1.5);
+         }
+      }
+   }
+
+   // --- [9] Pullback-Entry mit Fibonacci ---
+   bool   pullback_detected = false;
+   double fib_38_val        = 0.0;
+   double fib_62_val        = 0.0;
+   double ema21_val         = 0.0;
+
+   if(atr_val > 0.0)
+   {
+      ema21_val = GetEMA(symbol, PERIOD_M15, 21, 1);
+      if(ema21_val > 0.0)
+      {
+         MqlRates pb_rates[];
+         if(_GetCandles(symbol, PERIOD_M15, 21, pb_rates))
+         {
+            double cur_close = pb_rates[1].close;
+            // Swing High/Low der letzten 20 Bars (shift 1..20)
+            double swing_high = pb_rates[1].high;
+            double swing_low  = pb_rates[1].low;
+            for(int si = 2; si <= 20; si++)
+            {
+               if(pb_rates[si].high > swing_high) swing_high = pb_rates[si].high;
+               if(pb_rates[si].low  < swing_low)  swing_low  = pb_rates[si].low;
+            }
+
+            double swing_range = swing_high - swing_low;
+            if(swing_range > 0.0)
+            {
+               fib_38_val = swing_high - swing_range * 0.382;
+               fib_62_val = swing_high - swing_range * 0.618;
+
+               bool in_fib_zone = (cur_close >= fib_62_val && cur_close <= fib_38_val);
+               bool near_ema    = (MathAbs(cur_close - ema21_val) <= atr_val * 0.3);
+
+               if(in_fib_zone && near_ema)
+                  pullback_detected = true;
+            }
+         }
+      }
+   }
+
    // --- Confidence berechnen ---
    result.score     = score;
    result.max_score = 11;
    double raw_conf  = (double)score / (double)result.max_score;
    result.confidence = MathMax(0.0, MathMin(1.0, raw_conf));
+
+   // Breakout-Boost anwenden
+   if(breakout_detected)
+   {
+      result.confidence = MathMin(1.0, result.confidence + 0.10);
+      if(vol_confirmed)
+      {
+         LOG_I("EntrySignal", symbol,
+               StringFormat("Volumen-Bestätigung ok | %.2f× Durchschnitt", vol_ratio));
+      }
+      else
+      {
+         result.confidence = MathMax(0.0, result.confidence - 0.15);
+         LOG_W("EntrySignal", symbol,
+               "Breakout ohne Volumen-Bestätigung | Confidence reduziert");
+      }
+   }
+
+   // Pullback-Boost anwenden
+   if(pullback_detected)
+      result.confidence = MathMin(1.0, result.confidence + 0.08);
 
    if(result.confidence < cfg.entry.signal_confidence_threshold)
    {
@@ -301,12 +449,14 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
    // --- Richtung und Entry-Typ festlegen ---
    result.signal = (direction == 1) ? SIGNAL_LONG : SIGNAL_SHORT;
 
-   // Entry-Typ: höchster Einzelscore entscheidet
-   if(pin_pts >= 3)                          result.entry_type = ENTRY_PIN_BAR;
-   else if(eng_pts >= 2)                     result.entry_type = ENTRY_ENGULFING;
-   else if(rsi_pts >= 2)                     result.entry_type = ENTRY_RSI_DIVERGENCE;
-   else if(macd_pts >= 1)                    result.entry_type = ENTRY_MACD_CROSS;
-   else if(ema_pts >= 1)                     result.entry_type = ENTRY_EMA_TOUCH;
+   // Entry-Typ: Breakout/Pullback haben Vorrang, dann höchster Einzelscore
+   if(breakout_detected)                         result.entry_type = ENTRY_BREAKOUT;
+   else if(pullback_detected)                    result.entry_type = ENTRY_PULLBACK;
+   else if(pin_pts >= 3)                         result.entry_type = ENTRY_PIN_BAR;
+   else if(eng_pts >= 2)                         result.entry_type = ENTRY_ENGULFING;
+   else if(rsi_pts >= 2)                         result.entry_type = ENTRY_RSI_DIVERGENCE;
+   else if(macd_pts >= 1)                        result.entry_type = ENTRY_MACD_CROSS;
+   else if(ema_pts >= 1)                         result.entry_type = ENTRY_EMA_TOUCH;
 
    // --- Entry-Preis ---
    if(direction == 1)
@@ -323,10 +473,26 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       case ENTRY_RSI_DIVERGENCE:  type_str = "RSI-Div";        break;
       case ENTRY_MACD_CROSS:      type_str = "MACD-Cross";     break;
       case ENTRY_EMA_TOUCH:       type_str = "EMA-Touch";      break;
+      case ENTRY_BREAKOUT:        type_str = "Breakout";       break;
+      case ENTRY_PULLBACK:        type_str = "Pullback";       break;
       default:                    type_str = "Mixed";           break;
    }
 
    string dir_str = (direction == 1) ? "Long" : "Short";
+
+   // Breakout/Pullback-spezifische Logs
+   if(breakout_detected)
+   {
+      LOG_I("EntrySignal", symbol,
+            StringFormat("Breakout-Entry erkannt | Level=%.5f Abstand=%.1f Pips",
+                         breakout_level, breakout_dist));
+   }
+   if(pullback_detected)
+   {
+      LOG_I("EntrySignal", symbol,
+            StringFormat("Pullback-Entry erkannt | Fib38=%.5f Fib62=%.5f EMA21=%.5f",
+                         fib_38_val, fib_62_val, ema21_val));
+   }
 
    result.summary = StringFormat("%s | %s | RSI=%s | Conf=%.2f | Score=%d/%d",
                                  dir_str, type_str, rsi_str,
