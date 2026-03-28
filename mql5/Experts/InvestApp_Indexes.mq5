@@ -23,6 +23,7 @@
 #include <InvestApp/TradeManagement.mqh>
 #include <InvestApp/OrderExecution.mqh>
 #include <InvestApp/SymbolManager.mqh>
+#include <InvestApp/SMCDetection.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -205,6 +206,38 @@ void AnalyzeSymbol(string symbol)
    {
       LOG_W("InvestApp_Indexes", symbol, "Order blocked: Kein Signal | " + signal.summary);
       return;
+   }
+
+   // [5a] SMC Confluence Bonus (FVG + Order Block)
+   {
+      int    smc_atr_handle = iATR(symbol, PERIOD_M15, 14);
+      double smc_atr_val    = 0.0;
+      if(smc_atr_handle != INVALID_HANDLE)
+      {
+         double atr_buf[];
+         ArraySetAsSeries(atr_buf, true);
+         if(CopyBuffer(smc_atr_handle, 0, 1, 1, atr_buf) > 0)
+            smc_atr_val = atr_buf[0];
+         IndicatorRelease(smc_atr_handle);
+      }
+      if(smc_atr_val > 0.0)
+      {
+         FairValueGap fvgs[];
+         OrderBlock   obs[];
+         int fvg_count  = DetectFVGs(symbol, PERIOD_M15, fvgs, smc_atr_val);
+         int ob_count   = DetectOrderBlocks(symbol, PERIOD_M15, obs, smc_atr_val);
+         double smc_bonus = CalcSMCBonus(signal.entry_price, fvgs, fvg_count,
+                                         obs, ob_count, smc_atr_val);
+         if(smc_bonus > 0.0)
+         {
+            string bonus_type = (smc_bonus >= 0.20) ? "FVG+OB"
+                              : (smc_bonus >= 0.15)  ? "OB" : "FVG";
+            signal.confidence = MathMin(1.0, signal.confidence + smc_bonus);
+            Print("SMC Confluence: ", bonus_type, " Bonus +",
+                  DoubleToString(smc_bonus * 100.0, 0), "% | Total Confidence: ",
+                  DoubleToString(signal.confidence * 100.0, 1), "%");
+         }
+      }
    }
 
    // [6] Validierung
