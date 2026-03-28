@@ -24,6 +24,7 @@
 #include <InvestApp/OrderExecution.mqh>
 #include <InvestApp/SymbolManager.mqh>
 #include <InvestApp/SMCDetection.mqh>
+#include <InvestApp/SpoofingDetector.mqh>
 
 //--- Input-Parameter
 input int    AnalysisIntervalSeconds = 30;    // Analyse-Intervall in Sekunden
@@ -244,6 +245,21 @@ void AnalyzeSymbol(string symbol)
       }
 
       signal.confidence = MathMax(0.0, MathMin(1.0, signal.confidence));
+
+      // Spoofing-Check (Level-2 Orderbuch – Graceful Degradation wenn nicht verfügbar)
+      ENUM_SPOOF_RISK spoof_risk = CheckSpoofing(symbol);
+      if(spoof_risk == SPOOF_HIGH)
+      {
+         LOG_W(EA_NAME, symbol, "Order blocked: SPOOF_HIGH – Orderbuch-Manipulation erkannt");
+         return;
+      }
+      else if(spoof_risk == SPOOF_MEDIUM)
+      {
+         signal.confidence -= 0.10;
+         signal.confidence  = MathMax(0.0, signal.confidence);
+         LOG_W(EA_NAME, symbol, StringFormat("Spoofing MEDIUM: Confidence -10%% → %.0f%%",
+               signal.confidence * 100.0));
+      }
 
       // 80% Confidence-Gate (Top-Signal-Schwelle)
       if(signal.confidence < 0.80)
