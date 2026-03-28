@@ -1,5 +1,6 @@
 //+------------------------------------------------------------------+
 //| EntrySignal.mqh – Candlestick + Indikator Signale               |
+//| Stufe 2d: Breakout/Pullback-Entry + Volumen-Bestätigung         |
 //+------------------------------------------------------------------+
 #ifndef INVESTAPP_ENTRYSIGNAL_MQH
 #define INVESTAPP_ENTRYSIGNAL_MQH
@@ -14,17 +15,20 @@
 //+------------------------------------------------------------------+
 enum SIGNAL_TYPE { SIGNAL_NONE = 0, SIGNAL_LONG = 1, SIGNAL_SHORT = -1 };
 enum ENTRY_TYPE  { ENTRY_NONE = 0, ENTRY_PIN_BAR = 1, ENTRY_ENGULFING = 2,
-                   ENTRY_RSI_DIVERGENCE = 3, ENTRY_MACD_CROSS = 4, ENTRY_EMA_TOUCH = 5 };
+                   ENTRY_RSI_DIVERGENCE = 3, ENTRY_MACD_CROSS = 4, ENTRY_EMA_TOUCH = 5,
+                   ENTRY_BREAKOUT = 6, ENTRY_PULLBACK = 7 };
 
 struct SignalResult
 {
    SIGNAL_TYPE signal;
    ENTRY_TYPE  entry_type;
-   double      confidence;    // 0.0–1.0
-   double      entry_price;   // vorgeschlagener Entry (Ask/Bid)
-   string      summary;       // z.B. "Long | PinBar | RSI=32 | Conf=0.78"
+   double      confidence;        // 0.0–1.0
+   double      entry_price;       // vorgeschlagener Entry (Ask/Bid)
+   string      summary;           // z.B. "Long | PinBar | RSI=32 | Conf=0.78"
    int         score;
    int         max_score;
+   bool        volume_confirmed;  // true wenn vol_cur > avg_vol * 1.5 (Breakout)
+   double      fib_level;         // Fibonacci-Retracement-Level (Pullback, 0.382–0.618)
 };
 
 //+------------------------------------------------------------------+
@@ -35,6 +39,26 @@ bool _GetCandles(string symbol, ENUM_TIMEFRAMES tf, int count, MqlRates &rates[]
    ArraySetAsSeries(rates, true);
    int copied = CopyRates(symbol, tf, 0, count + 2, rates);
    return (copied >= count + 1);
+}
+
+//+------------------------------------------------------------------+
+//| Hilfsfunktion: ATR (14, M15) – lokal um zirkuläre Includes      |
+//| zu vermeiden                                                      |
+//+------------------------------------------------------------------+
+double _GetATREntry(string symbol)
+{
+   int handle = iATR(symbol, PERIOD_M15, 14);
+   if(handle == INVALID_HANDLE) return 0.0;
+
+   double buf[];
+   ArraySetAsSeries(buf, true);
+   if(CopyBuffer(handle, 0, 1, 1, buf) <= 0)
+   {
+      IndicatorRelease(handle);
+      return 0.0;
+   }
+   IndicatorRelease(handle);
+   return buf[0];
 }
 
 //+------------------------------------------------------------------+
@@ -190,19 +214,40 @@ bool _IsEMATouch(string symbol, int direction)
 }
 
 //+------------------------------------------------------------------+
+//| Volumen-Bestätigung: aktuell vs. 20-Bar-Durchschnitt            |
+//| Gibt true zurück wenn vol_cur > avg_vol * 1.5                   |
+//+------------------------------------------------------------------+
+bool _CheckVolume(string symbol)
+{
+   long vol_cur = iVolume(symbol, PERIOD_M15, 1);
+   if(vol_cur <= 0) return false;
+
+   long vol_sum = 0;
+   for(int i = 1; i <= 20; i++)
+   {
+      long v = iVolume(symbol, PERIOD_M15, i);
+      if(v > 0) vol_sum += v;
+   }
+   long vol_avg = vol_sum / 20;
+
+   return (vol_avg > 0 && vol_cur > vol_avg * 1.5);
+}
+
+//+------------------------------------------------------------------+
 //| Hauptfunktion: Signal berechnen                                  |
 //+------------------------------------------------------------------+
 SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, AppConfig &cfg)
 {
    SignalResult result;
-   result.signal      = SIGNAL_NONE;
-   result.entry_type  = ENTRY_NONE;
-   result.confidence  = 0.0;
-   result.entry_price = 0.0;
-   result.summary     = "None";
-   result.score       = 0;
-   result.max_score   = 11;  // 2(RSI) + 1(MACD) + 3(PinBar) + 2(Engulfing) + 1(EMA) + 2(Trend) + 2(Level) = 13 max,
-                             // minus Level-Abzug möglich; normalisiert auf 11
+   result.signal           = SIGNAL_NONE;
+   result.entry_type       = ENTRY_NONE;
+   result.confidence       = 0.0;
+   result.entry_price      = 0.0;
+   result.summary          = "None";
+   result.score            = 0;
+   result.max_score        = 11;
+   result.volume_confirmed = false;
+   result.fib_level        = 0.0;
 
    // Richtungskandidat aus Trend ableiten (wird im Scoring verfeinert)
    int direction = (int)trend.direction;
@@ -250,16 +295,16 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       bool cross_up   = (macd_prev <= sig_prev && macd_cur  > sig_cur);
       bool cross_down = (macd_prev >= sig_prev && macd_cur  < sig_cur);
 
-      if(direction == 1 && cross_up)  { score += 1; macd_pts = 1; }
+      if(direction == 1 && cross_up)    { score += 1; macd_pts = 1; }
       if(direction == -1 && cross_down) { score += 1; macd_pts = 1; }
    }
 
    // --- [3] Candlestick-Muster ---
-   if(IsPinBar(symbol, direction))      { score += 3; pin_pts = 3; }
-   if(IsEngulfing(symbol, direction))   { score += 2; eng_pts = 2; }
+   if(IsPinBar(symbol, direction))    { score += 3; pin_pts = 3; }
+   if(IsEngulfing(symbol, direction)) { score += 2; eng_pts = 2; }
 
    // --- [4] EMA-Touch ---
-   if(_IsEMATouch(symbol, direction))   { score += 1; ema_pts = 1; }
+   if(_IsEMATouch(symbol, direction)) { score += 1; ema_pts = 1; }
 
    // --- [5] Trend-Alignment ---
    if((int)trend.direction == direction)
@@ -284,12 +329,115 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
          score -= 1;
    }
 
-   // --- Confidence berechnen ---
+   // --- Confidence aus Score berechnen ---
    result.score     = score;
    result.max_score = 11;
    double raw_conf  = (double)score / (double)result.max_score;
    result.confidence = MathMax(0.0, MathMin(1.0, raw_conf));
 
+   // --- [7] Breakout-Entry erkennen ---
+   // Close bricht Resistance (Long) oder Support (Short) um > ATR * 0.3
+   double atr_val = _GetATREntry(symbol);
+   bool is_breakout = false;
+   bool is_pullback = false;
+
+   MqlRates cur_rates[];
+   ArraySetAsSeries(cur_rates, true);
+   if(atr_val > 0.0 && CopyRates(symbol, PERIOD_M15, 0, 3, cur_rates) >= 2)
+   {
+      double cur_close = cur_rates[1].close;
+
+      // --- Breakout ---
+      if(direction == 1 && zones.nearest_resistance > 0.0)
+      {
+         if(cur_close > zones.nearest_resistance + atr_val * 0.3)
+            is_breakout = true;
+      }
+      else if(direction == -1 && zones.nearest_support > 0.0)
+      {
+         if(cur_close < zones.nearest_support - atr_val * 0.3)
+            is_breakout = true;
+      }
+
+      // --- Pullback (nur wenn kein Breakout) ---
+      if(!is_breakout)
+      {
+         // 20-Bar Swing High/Low auf M15
+         MqlRates swing_rates[];
+         ArraySetAsSeries(swing_rates, true);
+         int swcnt = CopyRates(symbol, PERIOD_M15, 1, 20, swing_rates);
+         if(swcnt >= 20)
+         {
+            double swing_high = swing_rates[0].high;
+            double swing_low  = swing_rates[0].low;
+            for(int si = 1; si < swcnt; si++)
+            {
+               if(swing_rates[si].high > swing_high) swing_high = swing_rates[si].high;
+               if(swing_rates[si].low  < swing_low)  swing_low  = swing_rates[si].low;
+            }
+
+            double swing_range = swing_high - swing_low;
+            if(swing_range > 0.0)
+            {
+               double ema21_val = GetEMA(symbol, PERIOD_M15, 21, 1);
+               // Preis muss nahe EMA21 sein (innerhalb 0.2% Toleranz)
+               bool near_ema = (ema21_val > 0.0 &&
+                                MathAbs(cur_close - ema21_val) <= ema21_val * 0.002);
+
+               // Fibonacci-Retracement berechnen
+               double retrace = 0.0;
+               if(direction == 1)
+                  retrace = (swing_high - cur_close) / swing_range;
+               else
+                  retrace = (cur_close - swing_low) / swing_range;
+
+               // Gültig bei Fibonacci 38.2%–61.8% UND nahe EMA21
+               if(near_ema && retrace >= 0.382 && retrace <= 0.618)
+               {
+                  is_pullback = true;
+                  result.fib_level = retrace;
+               }
+            }
+         }
+      }
+   }
+
+   // --- [8] Breakout/Pullback Confidence-Anpassung ---
+   if(is_breakout)
+   {
+      result.confidence += 0.10;
+      result.entry_type  = ENTRY_BREAKOUT;
+
+      // Volumen-Bestätigung für Breakout prüfen
+      bool vol_ok = _CheckVolume(symbol);
+      result.volume_confirmed = vol_ok;
+      if(!vol_ok)
+      {
+         result.confidence -= 0.15;
+         LOG_W("EntrySignal", symbol,
+               StringFormat("Breakout ohne Volumenbestätigung – Conf reduziert auf %.2f",
+                            result.confidence));
+      }
+   }
+   else if(is_pullback)
+   {
+      result.confidence += 0.08;
+      result.entry_type  = ENTRY_PULLBACK;
+   }
+   else
+   {
+      // Candlestick-basierter Entry-Typ (Priorität: Pin > Engulfing > RSI > MACD > EMA)
+      if(pin_pts >= 3)       result.entry_type = ENTRY_PIN_BAR;
+      else if(eng_pts >= 2)  result.entry_type = ENTRY_ENGULFING;
+      else if(rsi_pts >= 2)  result.entry_type = ENTRY_RSI_DIVERGENCE;
+      else if(macd_pts >= 1) result.entry_type = ENTRY_MACD_CROSS;
+      else if(ema_pts >= 1)  result.entry_type = ENTRY_EMA_TOUCH;
+   }
+
+   // Confidence auf [0.0, 1.0] klemmen
+   result.confidence = MathMax(0.0, MathMin(1.0, result.confidence));
+
+   // --- Schwellenwert-Check ---
    if(result.confidence < cfg.entry.signal_confidence_threshold)
    {
       result.summary = StringFormat("None | Conf=%.2f < Threshold=%.2f",
@@ -298,17 +446,9 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
       return result;
    }
 
-   // --- Richtung und Entry-Typ festlegen ---
+   // --- Richtung und Entry-Preis setzen ---
    result.signal = (direction == 1) ? SIGNAL_LONG : SIGNAL_SHORT;
 
-   // Entry-Typ: höchster Einzelscore entscheidet
-   if(pin_pts >= 3)                          result.entry_type = ENTRY_PIN_BAR;
-   else if(eng_pts >= 2)                     result.entry_type = ENTRY_ENGULFING;
-   else if(rsi_pts >= 2)                     result.entry_type = ENTRY_RSI_DIVERGENCE;
-   else if(macd_pts >= 1)                    result.entry_type = ENTRY_MACD_CROSS;
-   else if(ema_pts >= 1)                     result.entry_type = ENTRY_EMA_TOUCH;
-
-   // --- Entry-Preis ---
    if(direction == 1)
       result.entry_price = SymbolInfoDouble(symbol, SYMBOL_ASK);
    else
@@ -318,18 +458,23 @@ SignalResult GetSignal(string symbol, TrendResult &trend, SymbolZones &zones, Ap
    string type_str = "";
    switch(result.entry_type)
    {
-      case ENTRY_PIN_BAR:         type_str = "PinBar";         break;
-      case ENTRY_ENGULFING:       type_str = "Engulfing";      break;
-      case ENTRY_RSI_DIVERGENCE:  type_str = "RSI-Div";        break;
-      case ENTRY_MACD_CROSS:      type_str = "MACD-Cross";     break;
-      case ENTRY_EMA_TOUCH:       type_str = "EMA-Touch";      break;
-      default:                    type_str = "Mixed";           break;
+      case ENTRY_PIN_BAR:         type_str = "PinBar";      break;
+      case ENTRY_ENGULFING:       type_str = "Engulfing";   break;
+      case ENTRY_RSI_DIVERGENCE:  type_str = "RSI-Div";     break;
+      case ENTRY_MACD_CROSS:      type_str = "MACD-Cross";  break;
+      case ENTRY_EMA_TOUCH:       type_str = "EMA-Touch";   break;
+      case ENTRY_BREAKOUT:        type_str = "Breakout";    break;
+      case ENTRY_PULLBACK:        type_str = StringFormat("Pullback(Fib=%.3f)", result.fib_level); break;
+      default:                    type_str = "Mixed";        break;
    }
 
    string dir_str = (direction == 1) ? "Long" : "Short";
+   string vol_str = (result.entry_type == ENTRY_BREAKOUT)
+                    ? (result.volume_confirmed ? " VolOK" : " VolWeak")
+                    : "";
 
-   result.summary = StringFormat("%s | %s | RSI=%s | Conf=%.2f | Score=%d/%d",
-                                 dir_str, type_str, rsi_str,
+   result.summary = StringFormat("%s | %s%s | RSI=%s | Conf=%.2f | Score=%d/%d",
+                                 dir_str, type_str, vol_str, rsi_str,
                                  result.confidence, result.score, result.max_score);
 
    LOG_I("EntrySignal", symbol, result.summary);
