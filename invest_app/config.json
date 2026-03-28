@@ -250,7 +250,7 @@
     "adx_min_threshold": 20,
     "rsi_overbought": 70,
     "rsi_oversold": 30,
-    "bypass_session_filter": false
+    "bypass_session_filter": true
   },
   "trade_exit": {
     "_comment": "MQL5 ConfigReader – Rollover-Management und TP-Einstellungen",
